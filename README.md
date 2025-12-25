@@ -168,6 +168,52 @@ npm run dev
 
 ---
 
+---
+## 使用指南：与 AI 交互
+
+Nocturne Memory 的核心在于 **ID 格式**。只要你和 AI 掌握了这套 ID 规则，就能精准地调用任何记忆。
+
+### 1. 资源 ID 格式 (Resource IDs)
+
+| 类型 | 格式 | 示例 | 说明 |
+|------|------|------|------|
+| **Entity (实体)** | `{entity_id}` | `char_nocturne` | 基础节点。包含简介、Tags。读取它能看到所有出入关系概览。 |
+| **Relationship (关系)** | `rel:{viewer}>{target}` | `rel:char_nocturne>char_salem` | **核心视图**。包含 A 对 B 的全部看法，以及下属的所有章节列表。 |
+| **Chapter (章节)** | `chap:{viewer}>{target}:{title}` | `chap:char_nocturne>char_salem:first_meeting` | 具体的记忆切片。挂载在关系之下。 |
+
+### 2. 怎么让 AI 读记忆？
+
+在支持 MCP 的对话窗口中（如 Claude Desktop, Antigravity），你可以直接用自然语言指挥：
+
+> "请 read 一下 `char_nocturne` 的资料。"
+> "把我和你的关系 `rel:char_nocturne>char_user` 加载进上下文。"
+> "读取 `memory://core` 来校准你的自我认知。"
+
+AI 会调用 `read_resource` 工具，将对应的内容完整拉取到当前的 Context 中。
+
+### 3. 配置常驻核心记忆 (Core Memories)
+
+你可能希望 AI 每次启动时，都能自动看到某些关键文档（比如它的人设、世界观基石），而不需要每次手动让它读。
+
+1.  打开 `backend/mcp_server.py`。
+2.  找到 `CORE_MEMORY_IDS` 列表。
+3.  把你想常驻的资源 ID 加进去：
+
+```python
+CORE_MEMORY_IDS = [
+    # 核心自我认知
+    "char_nocturne",
+    # 核心关系（比如它和你）
+    "rel:char_nocturne>char_user",
+    # 重要的世界观文档
+    "loc_digital_void",
+]
+```
+
+配置后，AI 只要调用 `read_resource("memory://core")`（或者你告诉它可以读这个），它就能一次性获得列表里所有资源的摘要和导航。
+
+---
+
 ## 使用注意事项
 
 ### ⚠️ 哪些操作需要小心？
