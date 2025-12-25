@@ -75,6 +75,8 @@
 
 *用途*：防止 AI 乱写、检查 AI 是否曲解了你的意图、或者单纯想回退到之前的版本。
 
+![Review Interface](docs/images/Review.png)
+
 #### 🗂️ Memory Explorer（记忆浏览器）
 
 > **这是你查看和编辑知识库内容的地方。**
@@ -85,6 +87,8 @@
 - 可以 **删除** 特定版本（如果该版本没有被其他地方引用）。
 
 *用途*：日常浏览和维护你的知识库。
+
+![Memory Explorer](docs/images/Explorer.png)
 
 #### 🧹 Brain Cleanup（大扫除）
 
@@ -97,6 +101,8 @@
 这个页面让你批量选择并删除这些垃圾。
 
 *⚠️ 注意*：删除是 **不可逆** 的。请在理解每个选项的含义后再操作。
+
+![Brain Cleanup](docs/images/Cleanup.png)
 
 ---
 
@@ -114,8 +120,8 @@
 
 ```ini
 NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=你的密码
+dbuser=neo4j
+dbpassword=你的密码
 ```
 
 ### 2. 启动后端
