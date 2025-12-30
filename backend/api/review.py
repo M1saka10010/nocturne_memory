@@ -311,6 +311,13 @@ def _rollback_entity(data: dict, task_description: str) -> dict:
                 detail=f"Entity '{entity_id}' no longer exists, cannot rollback"
             )
         
+        current_content = current.get("content", "")
+        
+        # Check if there's actually anything to rollback
+        if snapshot_content == current_content:
+            # No-op: content is identical, no rollback needed
+            return {"new_version": current.get("version"), "no_change": True}
+        
         result = client.update_entity(
             entity_id=entity_id,
             new_content=snapshot_content,
@@ -361,11 +368,24 @@ def _rollback_direct_edge(data: dict, task_description: str) -> dict:
         snapshot_inheritable = data.get("inheritable", True)
         
         rel_data = client.get_relationship_structure(viewer_id, target_id)
-        if not rel_data.get("direct"):
+        direct = rel_data.get("direct")
+        if not direct:
             raise HTTPException(
                 status_code=404,
                 detail=f"Relationship '{viewer_id}>{target_id}' no longer exists, cannot rollback"
             )
+        
+        current_content = direct.get("content", "")
+        current_relation = direct.get("relation", "RELATIONSHIP")
+        current_inheritable = direct.get("inheritable", True)
+        
+        # Check if there's actually anything to rollback
+        if (snapshot_content == current_content and 
+            snapshot_relation == current_relation and 
+            snapshot_inheritable == current_inheritable):
+            # No-op: content is identical, no rollback needed
+            # We don't have direct access to viewer version here easily, so return None
+            return {"new_version": None, "no_change": True}
         
         result = client.evolve_relationship(
             viewer_entity_id=viewer_id,
@@ -486,8 +506,16 @@ def _rollback_relay_edge(data: dict, task_description: str) -> dict:
             )
     else:
         # Rollback of modify = restore content
+        # CRITICAL: We must use evolve_relationship instead of update_entity
+        # to ensure RELAY_EDGE connections are properly maintained.
+        # update_entity only updates the State content, but doesn't rebuild
+        # the RELAY_EDGE which may have been moved or modified.
         snapshot_content = data.get("content", "")
         snapshot_inheritable = data.get("inheritable", True)
+        
+        viewer_id = data["viewer_id"]
+        target_id = data["target_id"]
+        chapter_name = data["chapter_name"]
         
         info = client.get_entity_info(relay_entity_id, include_basic=True)
         current = info.get("basic") if info else None
@@ -497,14 +525,33 @@ def _rollback_relay_edge(data: dict, task_description: str) -> dict:
                 detail=f"Chapter '{relay_entity_id}' no longer exists, cannot rollback"
             )
         
-        result = client.update_entity(
-            entity_id=relay_entity_id,
-            new_content=snapshot_content,
-            new_inheritable=snapshot_inheritable,
+        current_content = current.get("content", "")
+        current_inheritable = current.get("inheritable", True)
+        
+        # Check if there's actually anything to rollback
+        if snapshot_content == current_content and snapshot_inheritable == current_inheritable:
+            # No-op: content is identical, no rollback needed
+            # Return current version to indicate success without creating unnecessary versions
+            return {"new_version": current.get("version"), "no_change": True}
+        
+        # Use evolve_relationship to properly update chapter AND maintain edges
+        client.evolve_relationship(
+            viewer_entity_id=viewer_id,
+            target_entity_id=target_id,
+            chapter_updates={
+                chapter_name: {
+                    "content": snapshot_content,
+                    "inheritable": snapshot_inheritable
+                }
+            },
             task_description=task_description
         )
         
-        return {"new_version": result["new_version"]}
+        # Query the chapter's new version (evolve_relationship returns viewer version, not chapter version)
+        updated_info = client.get_entity_info(relay_entity_id, include_basic=True)
+        chapter_new_version = updated_info["basic"]["version"] if updated_info and updated_info.get("basic") else None
+        
+        return {"new_version": chapter_new_version}
 
 
 def _rollback_parent_link(data: dict, task_description: str) -> dict:
@@ -589,7 +636,10 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
         elif operation_type == "delete":
              message = f"Successfully restored resource '{resource_id}'."
         else:
-            message = f"Successfully restored content. Created version {result.get('new_version')}."
+            if result.get("no_change"):
+                message = f"No changes detected. Content already matches snapshot (v{result.get('new_version')})."
+            else:
+                message = f"Successfully restored content. Created version {result.get('new_version')}."
         
         return RollbackResponse(
             resource_id=resource_id,

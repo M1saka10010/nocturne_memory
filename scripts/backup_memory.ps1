@@ -21,6 +21,18 @@ $cypherShell = "$dbmsPath\bin\cypher-shell.bat"
 $importDir = "$dbmsPath\import"
 $backupDir = Join-Path $scriptDir "..\backups"
 
+# Use Neo4j's bundled JDK (cypher-shell.bat uses JAVACMD, not JAVA_HOME)
+$neo4jJdkPath = "C:\Users\niwatori\.Neo4jDesktop2\Cache\runtime\zulu21.44.17-ca-jdk21.0.8-win_x64"
+$javaExe = "$neo4jJdkPath\bin\java.exe"
+if (Test-Path $javaExe) {
+    $env:JAVACMD = $javaExe
+    Write-Host "Using Neo4j bundled JDK: $javaExe" -ForegroundColor Gray
+}
+else {
+    Write-Error "Neo4j bundled JDK not found at $javaExe. Please install Java 21."
+    exit 1
+}
+
 # Get credentials from environment
 $user = [Environment]::GetEnvironmentVariable("dbuser")
 $pass = [Environment]::GetEnvironmentVariable("dbpassword")
