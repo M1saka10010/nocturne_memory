@@ -1,18 +1,18 @@
 """
-Review API - Selective Rollback for Database Changes
+Review API - Selective Rollback for Database Changes (SQLite Backend)
 
 This module provides endpoints for Salem to review and selectively rollback
 Nocturne's database modifications.
 
 Design Philosophy:
-- Rollback doesn't delete versions; it creates a NEW version with old content
-- This preserves the complete history while allowing content restoration
-- Session-based organization makes it easy to review changes from specific runs
+- Rollback repoints the path to a previous version (not delete + recreate)
+- Old versions are marked deprecated for review
+- Salem can permanently delete deprecated memories after review
 """
-
 from fastapi import APIRouter, HTTPException
 from typing import List
 import difflib
+from urllib.parse import unquote
 
 from models import (
     DiffRequest, DiffResponse,
@@ -21,7 +21,7 @@ from models import (
 )
 from .utils import get_text_diff
 from db.snapshot import get_snapshot_manager
-from db.neo4j_client import get_neo4j_client
+from db.sqlite_client import get_sqlite_client
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -66,10 +66,11 @@ async def get_snapshot_detail(session_id: str, resource_id: str):
     获取指定快照的详细数据
     
     resource_id 示例:
-    - Entity: "char_nocturne"
-    - Direct Edge: "rel:char_nocturne>char_salem"
-    - Chapter: "chap:char_nocturne>char_salem:first_meeting"
+    - Memory path: "char_nocturne", "char_nocturne/char_salem"
     """
+    # Ensure resource_id is decoded (handling %2F and other encoded chars)
+    resource_id = unquote(resource_id)
+    
     manager = get_snapshot_manager()
     snapshot = manager.get_snapshot(session_id, resource_id)
     
@@ -89,51 +90,26 @@ async def get_snapshot_detail(session_id: str, resource_id: str):
 
 # ========== Diff Endpoints ==========
 
-def _get_current_content(resource_type: str, data: dict) -> str:
+async def _get_current_content(resource_type: str, data: dict) -> str:
     """
     获取资源的当前内容（用于 diff 对比）
     """
-    client = get_neo4j_client()
+    if resource_type != "memory":
+        return "[UNKNOWN TYPE]"
     
-    if resource_type == "entity":
-        entity_id = data["entity_id"]
-        info = client.get_entity_info(entity_id, include_basic=True)
-        state = info.get("basic") if info else None
-        if not state:
-            return "[DELETED]"
-        return state.get("content", "")
+    client = get_sqlite_client()
+    path = data.get("path")
+    domain = data.get("domain", "core")  # Default to core for legacy snapshots
     
-    elif resource_type == "direct_edge":
-        viewer_id = data["viewer_id"]
-        target_id = data["target_id"]
-        rel_data = client.get_relationship_structure(viewer_id, target_id)
-        direct = rel_data.get("direct")
-        if not direct:
-            return "[DELETED]"
-        return direct.get("content", "")
+    if not path:
+        return "[NO PATH]"
     
-    elif resource_type == "relay_edge":
-        relay_entity_id = data["relay_entity_id"]
-        info = client.get_entity_info(relay_entity_id, include_basic=True)
-        state = info.get("basic") if info else None
-        if not state:
-            return "[DELETED]"
-        return state.get("content", "")
+    memory = await client.get_memory_by_path(path, domain)
     
-    elif resource_type == "parent_link":
-        entity_id = data["entity_id"]
-        parent_id = data["parent_id"]
-        # 这里不能通过 get_entity_info(include_children=True) 的子节点列表判断，
-        # 因为 get_entity_info 在查询子节点时有 LIMIT 50。
-        # 如果父节点子节点超过 50 个且当前子节点排在 50 之后，会被误判为未关联。
-        link_exists = client.has_parent_link(entity_id, parent_id)
-        
-        if link_exists:
-            return f"LINK EXISTS: {entity_id} -> {parent_id}"
-        else:
-            return "[NOT LINKED]"
+    if not memory:
+        return "[DELETED]"
     
-    return "[UNKNOWN TYPE]"
+    return memory.get("content", "")
 
 
 def _compute_diff(old_content: str, new_content: str) -> tuple:
@@ -169,6 +145,9 @@ async def get_resource_diff(session_id: str, resource_id: str):
     对于 modify 类型：显示内容变化
     对于 create 类型：显示新创建的内容（快照为空）
     """
+    # Ensure resource_id is decoded
+    resource_id = unquote(resource_id)
+    
     manager = get_snapshot_manager()
     snapshot = manager.get_snapshot(session_id, resource_id)
     
@@ -180,411 +159,182 @@ async def get_resource_diff(session_id: str, resource_id: str):
     
     operation_type = snapshot["data"].get("operation_type", "modify")
     
-    # Special handling for structural changes (parent_link)
-    if snapshot["resource_type"] == "parent_link":
-        entity_id = snapshot["data"]["entity_id"]
-        parent_id = snapshot["data"]["parent_id"]
-        current_content = _get_current_content("parent_link", snapshot["data"])
-        
-        if operation_type == "create":
-            snapshot_content = "[NO LINK]"
-            if "LINK EXISTS" in current_content:
-                summary = "Created Parent Link (Rollback = Unlink)"
-                has_changes = True
-                unified = f"--- /dev/null\n+++ {resource_id}\n+Parent Link: {entity_id} -> {parent_id}"
-            else:
-                summary = "Link already removed"
-                has_changes = False
-                unified = "No changes"
-                
-        elif operation_type == "delete":
-            snapshot_content = f"Parent Link: {entity_id} -> {parent_id}"
-            if "NOT LINKED" in current_content:
-                summary = "Deleted Parent Link (Rollback = Restore Link)"
-                has_changes = True
-                unified = f"--- {resource_id}\n+++ /dev/null\n-Parent Link: {entity_id} -> {parent_id}"
-            else:
-                summary = "Link already restored"
-                has_changes = False
-                unified = "No changes"
-        else:
-             snapshot_content = ""
-             summary = "Unknown operation"
-             has_changes = False
-             unified = ""
-             
-        return ResourceDiff(
-            resource_id=resource_id,
-            resource_type=snapshot["resource_type"],
-            snapshot_time=snapshot["snapshot_time"],
-            snapshot_content=snapshot_content,
-            current_content=current_content,
-            diff_unified=unified,
-            diff_summary=summary,
-            has_changes=has_changes
-        )
-    
     if operation_type == "create":
-        # For create operations, snapshot has no content
-        snapshot_content = "[NOT EXISTS - newly created]"
-        current_content = _get_current_content(snapshot["resource_type"], snapshot["data"])
+        # For create operations, snapshot is empty
+        snapshot_data = {"content": None, "title": None, "importance": None, "disclosure": None}
         
-        if current_content == "[DELETED]":
+        current_memory = await _get_current_memory(snapshot["resource_type"], snapshot["data"])
+        
+        if not current_memory:
+            current_data = {"content": "[DELETED]", "title": None, "importance": None, "disclosure": None}
             summary = "Created then deleted"
             has_changes = False
         else:
-            # Show the created content
-            line_count = len(current_content.splitlines())
+            current_data = {
+                "content": current_memory.get("content", ""),
+                "title": current_memory.get("title"),
+                "importance": current_memory.get("importance"),
+                "disclosure": current_memory.get("disclosure")
+            }
+            line_count = len(current_data["content"].splitlines())
             summary = f"Created: +{line_count} lines (rollback = delete)"
             has_changes = True
         
         unified = f"--- /dev/null\n+++ {resource_id}\n"
-        if current_content and current_content != "[DELETED]":
-            for line in current_content.splitlines():
+        if current_data["content"] and current_data["content"] != "[DELETED]":
+            for line in current_data["content"].splitlines():
                 unified += f"+{line}\n"
     else:
-        # For modify operations, show the diff
-        snapshot_content = snapshot["data"].get("content", "")
-        current_content = _get_current_content(snapshot["resource_type"], snapshot["data"])
+        # For modify operations
+        snapshot_data = {
+            "content": snapshot["data"].get("content", ""),
+            "title": snapshot["data"].get("title"),
+            "importance": snapshot["data"].get("importance"),
+            "disclosure": snapshot["data"].get("disclosure")
+        }
         
-        unified, summary = _compute_diff(snapshot_content, current_content)
-        has_changes = snapshot_content != current_content
+        client = get_sqlite_client()
+        path = snapshot["data"].get("path")
+        domain = snapshot["data"].get("domain", "core")
+        current_memory = await client.get_memory_by_path(path, domain)
+        
+        if not current_memory:
+            current_data = {"content": "[DELETED]", "title": None, "importance": None, "disclosure": None}
+        else:
+            current_data = {
+                "content": current_memory.get("content", ""),
+                "title": current_memory.get("title"),
+                "importance": current_memory.get("importance"),
+                "disclosure": current_memory.get("disclosure")
+            }
+        
+        unified, summary = _compute_diff(snapshot_data["content"], current_data["content"])
+        has_content_changes = snapshot_data["content"] != current_data["content"]
+        
+        # Check metadata changes
+        meta_changes = []
+        for key in ["title", "importance", "disclosure"]:
+            if snapshot_data.get(key) != current_data.get(key):
+                meta_changes.append(f"{key}: {snapshot_data.get(key)} -> {current_data.get(key)}")
+        
+        if meta_changes:
+            has_changes = True
+            meta_summary = "Metadata: " + ", ".join(meta_changes)
+            if summary == "No changes":
+                summary = meta_summary
+            else:
+                summary += f" | {meta_summary}"
+        else:
+            has_changes = has_content_changes
     
     return ResourceDiff(
         resource_id=resource_id,
         resource_type=snapshot["resource_type"],
         snapshot_time=snapshot["snapshot_time"],
-        snapshot_content=snapshot_content,
-        current_content=current_content,
+        snapshot_data=snapshot_data,
+        current_data=current_data,
         diff_unified=unified,
         diff_summary=summary,
         has_changes=has_changes
     )
 
+async def _get_current_memory(resource_type: str, data: dict):
+    """Helper to get current memory object"""
+    if resource_type != "memory":
+        return None
+    
+    client = get_sqlite_client()
+    path = data.get("path")
+    domain = data.get("domain", "core")
+    
+    if not path:
+        return None
+        
+    return await client.get_memory_by_path(path, domain)
+
 
 # ========== Rollback Endpoints ==========
 
-def _rollback_entity(data: dict, task_description: str) -> dict:
-    """执行 Entity 回滚"""
-    client = get_neo4j_client()
-    entity_id = data["entity_id"]
+async def _rollback_memory(data: dict, task_description: str) -> dict:
+    """执行 Memory 回滚"""
+    client = get_sqlite_client()
+    path = data.get("path")
+    domain = data.get("domain", "core")  # Default to core for legacy snapshots
     operation_type = data.get("operation_type", "modify")
+    uri = data.get("uri", f"{domain}://{path}")
     
     if operation_type == "create":
-        # Rollback of create = delete the entity
-        info = client.get_entity_info(entity_id, include_basic=True)
-        current = info.get("basic") if info else None
+        # Rollback of create = delete the memory
+        current = await client.get_memory_by_path(path, domain)
         if not current:
             # Already deleted, nothing to do
             return {"new_version": None, "deleted": True}
         
-        # Try to delete all states first, then the entity
-        # This may fail if there are edges referencing this entity
+        # True rollback: permanently delete the memory and all its paths
         try:
-            # Get all states for this entity and delete them
-            version = current["version"]
-            for v in range(version, 0, -1):
-                state_id = f"{entity_id}_v{v}"
-                try:
-                    client.delete_state(state_id)
-                except ValueError:
-                    pass  # State might have dependencies or not exist
-            
-            # Now try to delete the entity itself
-            client.delete_entity(entity_id)
+            memory_id = current.get("id")
+            await client.permanently_delete_memory(memory_id)
             return {"new_version": None, "deleted": True}
         except ValueError as e:
             raise HTTPException(
                 status_code=409,
-                detail=f"Cannot delete entity '{entity_id}': {str(e)}. "
-                       f"Delete dependent edges first."
+                detail=f"Cannot delete memory '{uri}': {str(e)}"
             )
     else:
-        # Rollback of modify = restore content
-        snapshot_content = data.get("content", "")
+        # Rollback of modify = restore to snapshot version
+        snapshot_memory_id = data.get("memory_id")
         
-        info = client.get_entity_info(entity_id, include_basic=True)
-        current = info.get("basic") if info else None
+        if not snapshot_memory_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Snapshot missing memory_id"
+            )
+        
+        current = await client.get_memory_by_path(path, domain)
         if not current:
             raise HTTPException(
                 status_code=404,
-                detail=f"Entity '{entity_id}' no longer exists, cannot rollback"
+                detail=f"URI '{uri}' no longer exists, cannot rollback"
             )
         
-        current_content = current.get("content", "")
+        # Check if there's actually anything to rollback (content OR metadata)
+        snapshot_importance = data.get("importance")
+        snapshot_disclosure = data.get("disclosure")
         
-        # Check if there's actually anything to rollback
-        if snapshot_content == current_content:
-            # No-op: content is identical, no rollback needed
-            return {"new_version": current.get("version"), "no_change": True}
+        current_importance = current.get("importance")
+        current_disclosure = current.get("disclosure")
         
-        result = client.update_entity(
-            entity_id=entity_id,
-            new_content=snapshot_content,
-            task_description=task_description
+        # Check if the memory version has changed (due to content OR title update)
+        # Title is stored on Memory, so title change = new memory version
+        # We check ID mismatch to catch both content and title changes
+        has_version_change = snapshot_memory_id != current.get("id")
+        
+        # Check path metadata changes (importance/disclosure are on Path, not Memory)
+        has_path_metadata_change = (
+            snapshot_importance != current_importance or
+            snapshot_disclosure != current_disclosure
         )
         
-        return {"new_version": result["new_version"]}
-
-
-def _rollback_direct_edge(data: dict, task_description: str) -> dict:
-    """执行 Direct Edge 回滚"""
-    client = get_neo4j_client()
-    viewer_id = data["viewer_id"]
-    target_id = data["target_id"]
-    operation_type = data.get("operation_type", "modify")
-    
-    if operation_type == "create":
-        # Rollback of create = delete the direct edge
-        rel_data = client.get_relationship_structure(viewer_id, target_id)
-        if not rel_data.get("direct"):
-            # Already deleted
-            return {"new_version": None, "deleted": True}
+        if not has_version_change and not has_path_metadata_change:
+            return {"new_version": current.get("id"), "no_change": True}
         
-        # Check if there are chapters under this relationship
-        relays = rel_data.get("relays", [])
-        relays = [r for r in relays if r is not None]
+        restored_memory_id = current.get("id")
         
-        if relays:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot delete relationship '{viewer_id}>{target_id}': "
-                       f"it has {len(relays)} chapter(s). Delete chapters first."
+        # Rollback content/title: repoint path to snapshot memory
+        if has_version_change:
+            result = await client.rollback_to_memory(path, snapshot_memory_id, domain)
+            restored_memory_id = result["restored_memory_id"]
+        
+        # Rollback Path metadata (importance/disclosure) if changed
+        if has_path_metadata_change:
+            await client.update_memory(
+                path=path,
+                domain=domain,
+                importance=snapshot_importance,
+                disclosure=snapshot_disclosure
             )
         
-        # Delete the direct edge
-        try:
-            client.delete_direct_edge(viewer_id, target_id, force=False)
-            return {"new_version": None, "deleted": True}
-        except ValueError as e:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot delete relationship: {str(e)}"
-            )
-    else:
-        # Rollback of modify = restore content
-        snapshot_content = data.get("content", "")
-        snapshot_relation = data.get("relation", "RELATIONSHIP")
-        snapshot_inheritable = data.get("inheritable", True)
-        
-        rel_data = client.get_relationship_structure(viewer_id, target_id)
-        direct = rel_data.get("direct")
-        if not direct:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Relationship '{viewer_id}>{target_id}' no longer exists, cannot rollback"
-            )
-        
-        current_content = direct.get("content", "")
-        current_relation = direct.get("relation", "RELATIONSHIP")
-        current_inheritable = direct.get("inheritable", True)
-        
-        # Check if there's actually anything to rollback
-        if (snapshot_content == current_content and 
-            snapshot_relation == current_relation and 
-            snapshot_inheritable == current_inheritable):
-            # No-op: content is identical, no rollback needed
-            # We don't have direct access to viewer version here easily, so return None
-            return {"new_version": None, "no_change": True}
-        
-        result = client.evolve_relationship(
-            viewer_entity_id=viewer_id,
-            target_entity_id=target_id,
-            direct_patch={
-                "content": snapshot_content,
-                "relation": snapshot_relation,
-                "inheritable": snapshot_inheritable
-            },
-            task_description=task_description
-        )
-        
-        return {"new_version": result["viewer_new_version"]}
-
-
-def _rollback_relay_edge(data: dict, task_description: str) -> dict:
-    """执行 Relay Edge (Chapter) 回滚"""
-    client = get_neo4j_client()
-    relay_entity_id = data["relay_entity_id"]
-    operation_type = data.get("operation_type", "modify")
-    
-    if operation_type == "create":
-        # Rollback of create = delete the chapter
-        info = client.get_entity_info(relay_entity_id, include_basic=True)
-        current = info.get("basic") if info else None
-        if not current:
-            # Already deleted
-            print(f"[Rollback Debug] Relay entity {relay_entity_id} already gone. Skipping.")
-            return {"new_version": None, "deleted": True}
-        
-        viewer_id = data["viewer_id"]
-        target_id = data["target_id"]
-        chapter_name = data["chapter_name"]
-        
-        # Generate edge_id for the relay edge
-        edge_id = client._generate_edge_id(viewer_id, chapter_name, target_id)
-        print(f"[Rollback Debug] Attempting to rollback chapter '{chapter_name}'")
-        print(f"[Rollback Debug] Calculated edge_id: {edge_id}")
-        print(f"[Rollback Debug] Relay entity ID: {relay_entity_id}")
-
-        # DEBUG: Check if edge exists before deleting
-        with client.driver.session() as session:
-            # 1. 精确查找
-            check = session.run("MATCH ()-[r:RELAY_EDGE {edge_id: $eid}]->() RETURN count(r) as c", eid=edge_id).single()
-            count = check["c"] if check else 0
-            print(f"[Rollback Debug] Neo4j reports {count} RELAY_EDGEs with EXACT edge_id: '{edge_id}'")
-            print(f"[Rollback Debug] edge_id hex: {edge_id.encode('utf-8').hex()}")
-            
-            # 2. 模糊查找/全量打印（仅当精确查找失败时）
-            if count == 0:
-                print("[Rollback Debug] Exact match failed. Dumping ALL RELAY_EDGE IDs in DB:")
-                all_edges = session.run("MATCH ()-[r:RELAY_EDGE]->() RETURN DISTINCT r.edge_id as eid LIMIT 50")
-                for rec in all_edges:
-                    db_id = rec["eid"]
-                    print(f"  - DB ID: '{db_id}'")
-                    print(f"    Hex:   {str(db_id).encode('utf-8').hex()}")
-                    if db_id == edge_id:
-                        print("    (WTF: Python says they are equal, but Cypher match failed?)")
-        
-        try:
-            # First delete the relay edge connections
-            print("[Rollback Debug] Calling delete_relay_edge...")
-            try:
-                client.delete_relay_edge(edge_id)
-                print("[Rollback Debug] delete_relay_edge success.")
-            except ValueError as ve:
-                # 如果Relay Edge已经不存在，就当作“已删除”，继续后续清理
-                msg = str(ve)
-                if "Relay edge with id" in msg and "not found" in msg:
-                    print(
-                        "[Rollback Debug] delete_relay_edge reported 'not found', "
-                        "treating as already deleted and continuing."
-                    )
-                else:
-                    raise
-            
-            # Then delete all states of the relay entity
-            # 不再依赖 version 推测 state_id，而是直接查询 DB 中所有属于该 entity 的 State
-            with client.driver.session() as session:
-                state_rows = session.run(
-                    """
-                    MATCH (s:State)
-                    WHERE s.entity_id = $relay_entity_id
-                    RETURN s.id as id, s.version as version
-                    ORDER BY s.version DESC
-                    """,
-                    relay_entity_id=relay_entity_id,
-                )
-                state_ids = [row["id"] for row in state_rows]
-
-            print(
-                f"[Rollback Debug] Deleting {len(state_ids)} states for relay entity "
-                f"{relay_entity_id}: {state_ids}"
-            )
-
-            for state_id in state_ids:
-                # 这里不再吃掉异常，方便定位具体依赖
-                try:
-                    client.delete_state(state_id)
-                    print(f"[Rollback Debug] Deleted state {state_id}")
-                except ValueError as ve:
-                    print(f"[Rollback Debug] Failed to delete state {state_id}: {ve}")
-                    raise
-            
-            # Finally delete the relay entity
-            print("[Rollback Debug] Deleting relay entity...")
-            client.delete_entity(relay_entity_id)
-            print("[Rollback Debug] Rollback complete.")
-            
-            return {"new_version": None, "deleted": True}
-        except ValueError as e:
-            # 直接把底层错误冒泡给调用方，便于 debug
-            error_msg = f"Cannot delete chapter '{chapter_name}' (relay_entity_id={relay_entity_id}): {str(e)}"
-            print(f"[Rollback Debug] ERROR CAUGHT: {error_msg}")
-            raise HTTPException(
-                status_code=409,
-                detail=error_msg
-            )
-    else:
-        # Rollback of modify = restore content
-        # CRITICAL: We must use evolve_relationship instead of update_entity
-        # to ensure RELAY_EDGE connections are properly maintained.
-        # update_entity only updates the State content, but doesn't rebuild
-        # the RELAY_EDGE which may have been moved or modified.
-        snapshot_content = data.get("content", "")
-        snapshot_inheritable = data.get("inheritable", True)
-        
-        viewer_id = data["viewer_id"]
-        target_id = data["target_id"]
-        chapter_name = data["chapter_name"]
-        
-        info = client.get_entity_info(relay_entity_id, include_basic=True)
-        current = info.get("basic") if info else None
-        if not current:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Chapter '{relay_entity_id}' no longer exists, cannot rollback"
-            )
-        
-        current_content = current.get("content", "")
-        current_inheritable = current.get("inheritable", True)
-        
-        # Check if there's actually anything to rollback
-        if snapshot_content == current_content and snapshot_inheritable == current_inheritable:
-            # No-op: content is identical, no rollback needed
-            # Return current version to indicate success without creating unnecessary versions
-            return {"new_version": current.get("version"), "no_change": True}
-        
-        # Use evolve_relationship to properly update chapter AND maintain edges
-        client.evolve_relationship(
-            viewer_entity_id=viewer_id,
-            target_entity_id=target_id,
-            chapter_updates={
-                chapter_name: {
-                    "content": snapshot_content,
-                    "inheritable": snapshot_inheritable
-                }
-            },
-            task_description=task_description
-        )
-        
-        # Query the chapter's new version (evolve_relationship returns viewer version, not chapter version)
-        updated_info = client.get_entity_info(relay_entity_id, include_basic=True)
-        chapter_new_version = updated_info["basic"]["version"] if updated_info and updated_info.get("basic") else None
-        
-        return {"new_version": chapter_new_version}
-
-
-def _rollback_parent_link(data: dict, task_description: str) -> dict:
-    """执行 Parent Link 回滚"""
-    client = get_neo4j_client()
-    entity_id = data["entity_id"]
-    parent_id = data["parent_id"]
-    operation_type = data.get("operation_type", "create")
-    
-    if operation_type == "create":
-        # Rollback of create = unlink
-        try:
-            # Check if link exists first? unlink_parent usually handles non-existence gracefully 
-            # or raises error if not found. Let's try unlink.
-            client.unlink_parent(entity_id, parent_id)
-            return {"new_version": None, "deleted": True}
-        except ValueError:
-            # If not found, it's already "unlinked", so rollback is effectively done.
-            return {"new_version": None, "deleted": True}
-            
-    elif operation_type == "delete":
-        # Rollback of delete = re-link
-        try:
-            client.link_parent(entity_id, parent_id)
-            # link_parent doesn't return version, so we return None
-            return {"new_version": None} 
-        except ValueError as e:
-             raise HTTPException(
-                status_code=409, 
-                detail=f"Cannot restore parent link: {str(e)}"
-             )
-    
-    return {"new_version": None}
+        return {"new_version": restored_memory_id}
 
 
 @router.post("/sessions/{session_id}/rollback/{resource_id:path}", response_model=RollbackResponse)
@@ -593,11 +343,14 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
     执行回滚：将资源恢复到快照状态
     
     两种回滚模式：
-    1. **modify 回滚**：创建新版本，内容等于快照（版本历史保留）
-    2. **create 回滚**：删除新创建的资源（如果有依赖会失败）
+    1. **modify 回滚**：将 path 指回快照版本的 memory（被跳过的版本标记 deprecated）
+    2. **create 回滚**：删除新创建的 memory和path
     
     这是 Salem 控制 Nocturne 修改的主要手段。
     """
+    # Ensure resource_id is decoded
+    resource_id = unquote(resource_id)
+    
     manager = get_snapshot_manager()
     snapshot = manager.get_snapshot(session_id, resource_id)
     
@@ -613,14 +366,8 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
     task_desc = request.task_description or "Rollback to snapshot by Salem"
     
     try:
-        if resource_type == "entity":
-            result = _rollback_entity(data, task_desc)
-        elif resource_type == "direct_edge":
-            result = _rollback_direct_edge(data, task_desc)
-        elif resource_type == "relay_edge":
-            result = _rollback_relay_edge(data, task_desc)
-        elif resource_type == "parent_link":
-            result = _rollback_parent_link(data, task_desc)
+        if resource_type == "memory":
+            result = await _rollback_memory(data, task_desc)
         else:
             raise HTTPException(
                 status_code=400,
@@ -633,13 +380,11 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
                 message = f"Successfully deleted created resource '{resource_id}'."
             else:
                 message = "Resource was already deleted."
-        elif operation_type == "delete":
-             message = f"Successfully restored resource '{resource_id}'."
         else:
             if result.get("no_change"):
-                message = f"No changes detected. Content already matches snapshot (v{result.get('new_version')})."
+                message = "No changes detected. Content already matches snapshot."
             else:
-                message = f"Successfully restored content. Created version {result.get('new_version')}."
+                message = f"Successfully restored to snapshot version (memory_id={result.get('new_version')})."
         
         return RollbackResponse(
             resource_id=resource_id,
@@ -666,6 +411,9 @@ async def delete_snapshot(session_id: str, resource_id: str):
     """
     删除指定的快照（确认不需要回滚后）
     """
+    # Ensure resource_id is decoded
+    resource_id = unquote(resource_id)
+    
     manager = get_snapshot_manager()
     deleted = manager.delete_snapshot(session_id, resource_id)
     
@@ -697,6 +445,46 @@ async def clear_session(session_id: str):
     return {"message": f"Session '{session_id}' cleared, {count} snapshots deleted"}
 
 
+# ========== Deprecated Memory Management (Salem Only) ==========
+
+@router.get("/deprecated")
+async def list_deprecated_memories():
+    """
+    列出所有被标记为 deprecated 的记忆
+    
+    这些是 Nocturne 更新/删除后留下的旧版本，等待 Salem 审核后永久删除。
+    """
+    client = get_sqlite_client()
+    
+    try:
+        memories = await client.get_deprecated_memories()
+        return {
+            "count": len(memories),
+            "memories": memories
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/memories/{memory_id}")
+async def permanently_delete_memory(memory_id: int):
+    """
+    永久删除一条记忆（Salem 专用）
+    
+    这是真正的删除操作，不可恢复。
+    Nocturne 无法调用此接口。
+    """
+    client = get_sqlite_client()
+    
+    try:
+        await client.permanently_delete_memory(memory_id)
+        return {"message": f"Memory {memory_id} permanently deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ========== Utility Endpoints ==========
 
 @router.post("/diff", response_model=DiffResponse)
@@ -722,16 +510,3 @@ async def compare_text(request: DiffRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ========== 占位符端口 ==========
-
-@router.get("/nodes/entities/{entity_id}/diff")
-async def get_version_diff(entity_id: str, from_version: int, to_version: int):
-    """
-    【占位符】对比节点的两个版本
-
-    TODO: 实现此端口
-    用于懒更新时判断变化是否影响引用者
-    """
-    raise HTTPException(status_code=501, detail="Not implemented yet")

@@ -260,10 +260,17 @@ class SnapshotManager:
             session_dir = self._get_session_dir(session_id)
             if os.path.isdir(session_dir):
                 manifest = self._load_manifest(session_id)
+                resource_count = len(manifest.get("resources", {}))
+                
+                # Auto-cleanup empty sessions
+                if resource_count == 0:
+                    self.clear_session(session_id)
+                    continue
+
                 sessions.append({
                     "session_id": session_id,
                     "created_at": manifest.get("created_at"),
-                    "resource_count": len(manifest.get("resources", {}))
+                    "resource_count": resource_count
                 })
         
         # Sort by creation time (newest first)
@@ -319,7 +326,12 @@ class SnapshotManager:
         # Update manifest
         if resource_id in manifest.get("resources", {}):
             del manifest["resources"][resource_id]
-            self._save_manifest(session_id, manifest)
+            
+            # If no resources left, remove the entire session to prevent clutter
+            if not manifest["resources"]:
+                self.clear_session(session_id)
+            else:
+                self._save_manifest(session_id, manifest)
         
         return True
     
