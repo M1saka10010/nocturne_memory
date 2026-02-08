@@ -87,7 +87,7 @@ const NodeGridCard = ({ node, onClick }) => (
       </div>
       <div className="min-w-0 flex-1">
         <h3 className="text-sm font-semibold text-slate-300 group-hover:text-indigo-200 transition-colors break-words line-clamp-3">
-          {node.title || node.name || node.path.split('/').pop()}
+          {node.name || node.path.split('/').pop()}
         </h3>
         <p className="text-[10px] text-slate-600 font-mono truncate opacity-70 group-hover:opacity-100">
            /{node.path.split('/').pop()}
@@ -258,7 +258,7 @@ export default function MemoryBrowser() {
                             <div className="flex items-start justify-between gap-4">
                                 <div>
                                     <h1 className="text-2xl font-bold text-slate-100 tracking-tight mb-2">
-                                        {data.node.title || path.split('/').pop()}
+                                        {data.node.name || path.split('/').pop()}
                                     </h1>
                                     {data.node.disclosure && (
                                         <div className="inline-flex items-center gap-2 px-2 py-1 bg-amber-950/20 border border-amber-900/30 rounded text-amber-500/80 text-xs">

@@ -27,9 +27,10 @@ class SessionInfo(BaseModel):
 class SnapshotInfo(BaseModel):
     """快照元信息"""
     resource_id: str
-    resource_type: str  # 'memory'
+    resource_type: str  # 'path' or 'memory'
     snapshot_time: str
     operation_type: Optional[str] = "modify"
+    uri: Optional[str] = None  # Display URI (for memory snapshots where resource_id is memory:{id})
 
 
 class SnapshotDetail(BaseModel):
@@ -45,7 +46,7 @@ class ResourceDiff(BaseModel):
     resource_id: str
     resource_type: str
     snapshot_time: str
-    snapshot_data: Dict[str, Any]  # 快照时的完整状态 (content, title, importance, disclosure)
+    snapshot_data: Dict[str, Any]  # 快照时的完整状态 (content, importance, disclosure)
     current_data: Dict[str, Any]   # 当前的完整状态
     diff_unified: str
     diff_summary: str

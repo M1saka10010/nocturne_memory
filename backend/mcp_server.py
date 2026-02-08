@@ -141,139 +141,199 @@ def make_uri(domain: str, path: str) -> str:
 # =============================================================================
 # Snapshot Helpers
 # =============================================================================
+#
+# Snapshots are split into two dimensions matching the two DB tables:
+#
+#   1. PATH snapshots (resource_id = URI, resource_type = "path")
+#      Track changes to the paths table: create, create_alias, delete, modify_meta
+#
+#   2. MEMORY CONTENT snapshots (resource_id = "memory:{id}", resource_type = "memory")
+#      Track changes to the memories table: modify_content
+#
+# This separation ensures that path-level operations (e.g. add_alias) never
+# collide with content-level operations (e.g. update_memory), fixing the bug
+# where an alias snapshot blocked the content snapshot for the same URI.
+# =============================================================================
 
-async def _snapshot_memory(uri: str) -> bool:
+async def _snapshot_memory_content(uri: str) -> bool:
     """
-    Create a snapshot of a memory before modification.
-    Returns True if snapshot was created, False if already exists.
+    Snapshot memory content before modification.
+    
+    Uses memory:{id} as resource_id so it never collides with path snapshots.
+    Idempotent: if the same memory was already snapshotted (even via a different
+    alias URI), the existing snapshot is kept.
     """
     manager = get_snapshot_manager()
     session_id = get_session_id()
     
-    # Skip if already snapshotted
-    if manager.has_snapshot(session_id, uri):
-        return False
-    
-    # Parse URI
     domain, path = parse_uri(uri)
-    
-    # Get current state
     client = get_sqlite_client()
     memory = await client.get_memory_by_path(path, domain)
     
     if not memory:
-        return False  # Memory doesn't exist, nothing to snapshot
+        return False
     
-    # Create snapshot
+    resource_id = f"memory:{memory['id']}"
+    
+    if manager.has_snapshot(session_id, resource_id):
+        return False
+    
+    # Collect all paths pointing to this memory for fallback during rollback.
+    # If the primary path is later deleted, rollback can use an alternative.
+    memory_full = await client.get_memory_by_id(memory["id"])
+    all_paths = memory_full.get("paths", []) if memory_full else []
+    
+    return manager.create_snapshot(
+        session_id=session_id,
+        resource_id=resource_id,
+        resource_type="memory",
+        snapshot_data={
+            "operation_type": "modify_content",
+            "memory_id": memory["id"],
+            "content": memory.get("content"),
+            "uri": make_uri(domain, path),
+            "domain": domain,
+            "path": path,
+            "all_paths": all_paths
+        }
+    )
+
+
+async def _snapshot_path_meta(uri: str) -> bool:
+    """
+    Snapshot path metadata (importance/disclosure) before modification.
+    Uses URI as resource_id.
+    """
+    manager = get_snapshot_manager()
+    session_id = get_session_id()
+    
+    if manager.has_snapshot(session_id, uri):
+        return False
+    
+    domain, path = parse_uri(uri)
+    client = get_sqlite_client()
+    memory = await client.get_memory_by_path(path, domain)
+    
+    if not memory:
+        return False
+    
     return manager.create_snapshot(
         session_id=session_id,
         resource_id=uri,
-        resource_type="memory",
+        resource_type="path",
         snapshot_data={
-            "operation_type": "modify",
+            "operation_type": "modify_meta",
             "domain": domain,
             "path": path,
             "uri": uri,
             "memory_id": memory["id"],
-            "title": memory.get("title"),
-            "content": memory.get("content"),
             "importance": memory.get("importance"),
             "disclosure": memory.get("disclosure")
         }
     )
 
 
-async def _snapshot_create_memory(uri: str, memory_id: int) -> bool:
+async def _snapshot_path_create(
+    uri: str, memory_id: int,
+    operation_type: str = "create",
+    target_uri: str = None
+) -> bool:
     """
-    Record that a memory was created (for rollback = delete).
+    Record that a path was created (for rollback = remove the path).
+    
+    Used by both create_memory (operation_type="create") and
+    add_alias (operation_type="create_alias").
     """
     manager = get_snapshot_manager()
     session_id = get_session_id()
     
     domain, path = parse_uri(uri)
+    
+    data = {
+        "operation_type": operation_type,
+        "domain": domain,
+        "path": path,
+        "uri": uri,
+        "memory_id": memory_id
+    }
+    if target_uri:
+        data["target_uri"] = target_uri
     
     return manager.create_snapshot(
         session_id=session_id,
         resource_id=uri,
-        resource_type="memory",
-        snapshot_data={
-            "operation_type": "create",
-            "domain": domain,
-            "path": path,
-            "uri": uri,
-            "memory_id": memory_id
-        }
+        resource_type="path",
+        snapshot_data=data
     )
 
 
-async def _snapshot_delete_path(uri: str) -> bool:
+async def _snapshot_path_delete(uri: str) -> bool:
     """
     Record that a path is being deleted (for rollback = re-create).
     
-    Three cases depending on what snapshot already exists for this URI:
+    Two cases depending on what path snapshot already exists for this URI:
     
-    1. Existing snapshot is "create" (create->delete in same session):
+    1. Existing "create"/"create_alias" snapshot (create->delete in same session):
        Net effect is nothing happened. Remove the snapshot entirely.
     
-    2. Existing snapshot is "modify" (update->delete in same session):
-       The modify snapshot already holds the session-start state, which is
-       exactly what we want to restore on rollback. Just upgrade the
-       operation_type to "delete" so rollback knows to re-create the path.
-       Do NOT replace the snapshot data with the current (post-update) state.
-    
-    3. No existing snapshot (plain delete of a pre-session resource):
-       Create a fresh "delete" snapshot with the current state.
+    2. No prior path snapshot, or a "modify_meta" snapshot:
+       Capture the CURRENT state as a "delete" snapshot (force overwrite).
+       This stores the pre-delete memory_id, metadata, and content for
+       both rollback and diff display.
     """
     manager = get_snapshot_manager()
     session_id = get_session_id()
     
-    # Check if there's already a snapshot for this resource in this session
-    existing_snapshot = manager.get_snapshot(session_id, uri)
-    if existing_snapshot:
-        existing_op = existing_snapshot.get("data", {}).get("operation_type")
-        
-        if existing_op == "create":
-            # Case 1: create + delete = no-op. Remove snapshot entirely.
+    # Check for cancellation with prior create
+    existing = manager.get_snapshot(session_id, uri)
+    if existing:
+        existing_op = existing.get("data", {}).get("operation_type")
+        if existing_op in ("create", "create_alias"):
+            # create + delete = no-op. Remove path snapshot.
+            # Also clean up any content snapshots from updates between create and delete,
+            # otherwise they become orphaned (path gone → rollback 404).
+            original_memory_id = existing.get("data", {}).get("memory_id")
+            if original_memory_id:
+                manager.delete_snapshot(session_id, f"memory:{original_memory_id}")
+            # If content was updated, path now points to a newer memory version
+            domain_chk, path_chk = parse_uri(uri)
+            client = get_sqlite_client()
+            current_mem = await client.get_memory_by_path(path_chk, domain_chk)
+            if current_mem and current_mem["id"] != original_memory_id:
+                manager.delete_snapshot(session_id, f"memory:{current_mem['id']}")
             manager.delete_snapshot(session_id, uri)
             return False
-        
-        if existing_op == "modify":
-            # Case 2: update + delete. The snapshot already has the correct
-            # session-start content. Just change operation_type to "delete".
-            patched_data = dict(existing_snapshot["data"])
-            patched_data["operation_type"] = "delete"
-            manager.create_snapshot(
-                session_id=session_id,
-                resource_id=uri,
-                resource_type=existing_snapshot["resource_type"],
-                snapshot_data=patched_data,
-                force=True
-            )
-            return True
     
-    # Case 3: No prior snapshot. Capture the current state as a delete snapshot.
+    # Capture current state before deletion
     domain, path = parse_uri(uri)
-    
     client = get_sqlite_client()
     memory = await client.get_memory_by_path(path, domain)
     
     if not memory:
-        return False  # Memory doesn't exist, nothing to snapshot
+        return False
+    
+    # If overwriting a modify_meta snapshot, preserve the original (pre-session)
+    # metadata instead of the current (post-modification) values.
+    # This maintains the "first modification before session" invariant.
+    importance = memory.get("importance")
+    disclosure = memory.get("disclosure")
+    if existing and existing.get("data", {}).get("operation_type") == "modify_meta":
+        importance = existing["data"].get("importance", importance)
+        disclosure = existing["data"].get("disclosure", disclosure)
     
     return manager.create_snapshot(
         session_id=session_id,
         resource_id=uri,
-        resource_type="memory",
+        resource_type="path",
         snapshot_data={
             "operation_type": "delete",
             "domain": domain,
             "path": path,
             "uri": uri,
             "memory_id": memory["id"],
-            "title": memory.get("title"),
-            "content": memory.get("content"),
-            "importance": memory.get("importance"),
-            "disclosure": memory.get("disclosure")
+            "importance": importance,
+            "disclosure": disclosure,
+            "content": memory.get("content")  # For diff display
         },
         force=True
     )
@@ -471,7 +531,7 @@ async def read_memory(uri: str) -> str:
         uri: The memory URI (e.g., "core://char_nocturne", "system://boot")
     
     Returns:
-        Memory content with title, importance, disclosure, and list of children.
+        Memory content with importance, disclosure, and list of children.
     
     Examples:
         read_memory("core://char_salem")
@@ -544,9 +604,9 @@ async def create_memory(
             domain=domain
         )
         
-        # Record creation for potential rollback
+        # Record path creation for potential rollback
         created_uri = result.get("uri", make_uri(domain, result["path"]))
-        await _snapshot_create_memory(created_uri, result["id"])
+        await _snapshot_path_create(created_uri, result["id"], operation_type="create")
         
         return f"Success: Memory created at '{created_uri}'"
         
@@ -560,7 +620,6 @@ async def create_memory(
 async def update_memory(
     uri: str,
     content: Optional[str] = None,
-    title: Optional[str] = None,
     importance: Optional[int] = None,
     disclosure: Optional[str] = None
 ) -> str:
@@ -574,7 +633,6 @@ async def update_memory(
     Args:
         uri: URI to update (e.g., "core://char_nocturne/char_salem")
         content: New content (None = keep existing)
-        title: New title (None = keep existing)
         importance: New importance (None = keep existing)
         disclosure: New disclosure instruction (None = keep existing)
     
@@ -588,22 +646,19 @@ async def update_memory(
     client = get_sqlite_client()
     
     try:
-        # Validate title if provided
-        if title:
-            if not re.match(r'^[a-zA-Z0-9_-]+$', title):
-                return "Error: Title must only contain alphanumeric characters, underscores, or hyphens (no spaces, slashes, or special characters)."
-
         # Parse URI
         domain, path = parse_uri(uri)
         full_uri = make_uri(domain, path)
         
-        # Create snapshot before modification
-        await _snapshot_memory(full_uri)
+        # Snapshot both dimensions before modification (each is idempotent)
+        if content is not None:
+            await _snapshot_memory_content(full_uri)
+        if importance is not None or disclosure is not None:
+            await _snapshot_path_meta(full_uri)
         
         await client.update_memory(
             path=path,
             content=content,
-            title=title,
             importance=importance,
             disclosure=disclosure,
             domain=domain
@@ -652,8 +707,8 @@ async def delete_memory(uri: str) -> str:
         if not memory:
             return f"Error: Memory at '{full_uri}' not found."
         
-        # Create snapshot before deletion
-        await _snapshot_delete_path(full_uri)
+        # Snapshot path before deletion
+        await _snapshot_path_delete(full_uri)
         
         # Remove the path
         await client.remove_path(path, domain)
@@ -707,6 +762,14 @@ async def add_alias(
             disclosure=disclosure
         )
         
+        # Record alias path creation for potential rollback
+        await _snapshot_path_create(
+            uri=result['new_uri'],
+            memory_id=result['memory_id'],
+            operation_type="create_alias",
+            target_uri=result['target_uri']
+        )
+        
         return f"Success: Alias '{result['new_uri']}' now points to same memory as '{result['target_uri']}'"
         
     except ValueError as e:
@@ -718,7 +781,7 @@ async def add_alias(
 @mcp.tool()
 async def search_memory(query: str, domain: Optional[str] = None, limit: int = 10) -> str:
     """
-    Search memories by title and content using substring matching.
+    Search memories by path and content using substring matching.
     
     This uses a simple SQL `LIKE %query%` search. It is **NOT semantic search**.
 
@@ -752,7 +815,7 @@ async def search_memory(query: str, domain: Optional[str] = None, limit: int = 1
         
         for item in results:
             uri = item.get("uri", make_uri(item.get("domain", DEFAULT_DOMAIN), item["path"]))
-            lines.append(f"- [{item['title']}] {uri}")
+            lines.append(f"- [{item['name']}] {uri}")
             lines.append(f"  Importance: {item['importance']}")
             lines.append(f"  {item['snippet']}")
             lines.append("")

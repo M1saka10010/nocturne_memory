@@ -215,7 +215,8 @@ class SnapshotManager:
             "resource_type": resource_type,
             "snapshot_time": snapshot["snapshot_time"],
             "operation_type": snapshot_data.get("operation_type", "modify"),
-            "file": os.path.basename(snapshot_path)
+            "file": os.path.basename(snapshot_path),
+            "uri": snapshot_data.get("uri")  # For display (path snapshots use URI as resource_id; memory snapshots store it in data)
         }
         self._save_manifest(session_id, manifest)
         
@@ -296,7 +297,8 @@ class SnapshotManager:
                 "resource_id": resource_id,
                 "resource_type": meta.get("resource_type"),
                 "snapshot_time": meta.get("snapshot_time"),
-                "operation_type": meta.get("operation_type", "modify")
+                "operation_type": meta.get("operation_type", "modify"),
+                "uri": meta.get("uri")  # Display URI
             })
         
         return snapshots

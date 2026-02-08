@@ -33,11 +33,15 @@ Base = declarative_base()
 # =============================================================================
 
 class Memory(Base):
-    """A single memory unit with content and metadata."""
+    """A single memory unit with content and metadata.
+    
+    Note: The 'title' column was removed. A memory's display name is now
+    derived from the last segment of its path(s) in the paths table.
+    Existing DB columns named 'title' are simply ignored by SQLAlchemy.
+    """
     __tablename__ = "memories"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(255), nullable=True)  # Optional title/name
     content = Column(Text, nullable=False)
     deprecated = Column(Boolean, default=False)  # Marked for review/deletion
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -76,10 +80,10 @@ class SQLiteClient:
     
     Core operations:
     - read: Get memory by path
-    - create: New memory with auto-generated or specified title
+    - create: New memory with auto-generated or specified path segment
     - update: Create new version, deprecate old, repoint path
     - add_path: Create alias to existing memory
-    - search: Full-text search on title and content
+    - search: Substring search on path and content
     """
     
     def __init__(self, database_url: str):
@@ -129,7 +133,7 @@ class SQLiteClient:
             domain: The domain/namespace (e.g., "core", "writer", "game")
             
         Returns:
-            Memory dict with id, title, content, importance, disclosure, created_at
+            Memory dict with id, content, importance, disclosure, created_at
             or None if not found
         """
         async with self.session() as session:
@@ -148,7 +152,6 @@ class SQLiteClient:
             memory, path_obj = row
             return {
                 "id": memory.id,
-                "title": memory.title,
                 "content": memory.content,
                 "importance": path_obj.importance,  # From Path
                 "disclosure": path_obj.disclosure,  # From Path
@@ -186,7 +189,6 @@ class SQLiteClient:
             
             return {
                 "id": memory.id,
-                "title": memory.title,
                 "content": memory.content,
                 # Importance/Disclosure removed as they are path-dependent
                 "deprecated": memory.deprecated,
@@ -236,7 +238,7 @@ class SQLiteClient:
                 children.append({
                     "domain": path_obj.domain,
                     "path": path_obj.path,
-                    "title": memory.title,
+                    "name": path_obj.path.rsplit("/", 1)[-1],  # Last segment of path
                     "content_snippet": memory.content[:100] + "..." if len(memory.content) > 100 else memory.content,
                     "importance": path_obj.importance,  # From Path
                     "disclosure": path_obj.disclosure   # From Path
@@ -274,7 +276,7 @@ class SQLiteClient:
                     "domain": path_obj.domain,
                     "path": path_obj.path,
                     "uri": f"{path_obj.domain}://{path_obj.path}",
-                    "title": memory.title,
+                    "name": path_obj.path.rsplit("/", 1)[-1],  # Last segment of path
                     "importance": path_obj.importance,  # From Path
                     "memory_id": memory.id
                 })
@@ -301,7 +303,8 @@ class SQLiteClient:
             parent_path: Parent path (e.g. "char_nocturne/char_salem")
             content: Memory content
             importance: Relative importance (lower = more important, min 0)
-            title: Optional title. If None, auto-assigns numeric ID
+            title: Optional path segment name. If None, auto-assigns numeric ID.
+                   This becomes the last segment of the path, NOT stored in memories table.
             disclosure: When to expand this memory
             domain: The domain/namespace (e.g., "core", "writer", "game")
             
@@ -322,14 +325,12 @@ class SQLiteClient:
             
             # Determine the final path
             if title:
-                # Use provided title
+                # Use provided title as path segment
                 final_path = f"{parent_path}/{title}" if parent_path else title
-                final_title = title
             else:
                 # Auto-assign numeric ID
                 next_num = await self._get_next_numeric_id(session, parent_path, domain)
                 final_path = f"{parent_path}/{next_num}" if parent_path else str(next_num)
-                final_title = str(next_num)
             
             # Check if path already exists in this domain
             existing = await session.execute(
@@ -338,9 +339,8 @@ class SQLiteClient:
             if existing.scalar_one_or_none():
                 raise ValueError(f"Path '{domain}://{final_path}' already exists")
             
-            # Create memory (content only)
+            # Create memory (content only, no title stored)
             memory = Memory(
-                title=final_title,
                 content=content
             )
             session.add(memory)
@@ -361,7 +361,6 @@ class SQLiteClient:
                 "domain": domain,
                 "path": final_path,
                 "uri": f"{domain}://{final_path}",
-                "title": final_title,
                 "importance": importance
             }
     
@@ -404,7 +403,6 @@ class SQLiteClient:
         self,
         path: str,
         content: Optional[str] = None,
-        title: Optional[str] = None,
         importance: Optional[int] = None,
         disclosure: Optional[str] = None,
         domain: str = "core"
@@ -415,7 +413,6 @@ class SQLiteClient:
         Args:
             path: Path to update
             content: New content (None = keep old)
-            title: New title (None = keep old)
             importance: New importance (None = keep old)
             disclosure: New disclosure (None = keep old)
             domain: The domain/namespace (e.g., "core", "writer", "game")
@@ -440,11 +437,10 @@ class SQLiteClient:
             old_memory, path_obj = row
             old_id = old_memory.id
             
-            # Determine if we need a new memory version (content/title change)
+            # Determine if we need a new memory version (content change)
             # or just a path metadata update (importance/disclosure change)
             
             content_changed = content is not None and content != old_memory.content
-            title_changed = title is not None and title != old_memory.title
             
             # Update Path Metadata
             if importance is not None:
@@ -453,15 +449,11 @@ class SQLiteClient:
                 path_obj.disclosure = disclosure
                 
             new_memory_id = old_id
-            new_title = old_memory.title
             
-            if content_changed or title_changed:
+            if content_changed:
                 # Content changed: Create new memory version
-                new_title = title if title is not None else old_memory.title
-                
                 new_memory = Memory(
-                    title=new_title,
-                    content=content if content is not None else old_memory.content
+                    content=content
                 )
                 session.add(new_memory)
                 await session.flush()
@@ -487,7 +479,6 @@ class SQLiteClient:
                 "uri": f"{domain}://{path}",
                 "old_memory_id": old_id,
                 "new_memory_id": new_memory_id,
-                "title": new_title
             }
     
     async def rollback_to_memory(self, path: str, target_memory_id: int, domain: str = "core") -> Dict[str, Any]:
@@ -584,6 +575,20 @@ class SQLiteClient:
             
             if target_id is None:
                 raise ValueError(f"Target path '{target_domain}://{target_path}' not found")
+            
+            # Validate parent of new_path exists
+            if "/" in new_path:
+                parent_path = new_path.rsplit("/", 1)[0]
+                parent_exists = await session.execute(
+                    select(Path)
+                    .where(Path.domain == new_domain)
+                    .where(Path.path == parent_path)
+                )
+                if not parent_exists.scalar_one_or_none():
+                    raise ValueError(
+                        f"Parent '{new_domain}://{parent_path}' does not exist. "
+                        f"Create the parent first, or use a shallower alias path."
+                    )
             
             # Check if new path exists in the new domain
             existing = await session.execute(
@@ -706,10 +711,10 @@ class SQLiteClient:
     
     async def search(self, query: str, limit: int = 10, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search memories by title and content.
+        Search memories by path and content.
         
         Args:
-            query: Search query
+            query: Search query (substring match on path segments and content)
             limit: Max results
             domain: If specified, only search in this domain.
                     If None, search across all domains.
@@ -727,7 +732,7 @@ class SQLiteClient:
                 .where(Memory.deprecated == False)
                 .where(
                     or_(
-                        Memory.title.like(search_pattern),
+                        Path.path.like(search_pattern),
                         Memory.content.like(search_pattern)
                     )
                 )
@@ -763,7 +768,7 @@ class SQLiteClient:
                         "domain": path_obj.domain,
                         "path": path_obj.path,
                         "uri": f"{path_obj.domain}://{path_obj.path}",
-                        "title": memory.title,
+                        "name": path_obj.path.rsplit("/", 1)[-1],  # Last segment of path
                         "snippet": snippet,
                         "importance": path_obj.importance  # From Path
                     })
@@ -802,7 +807,6 @@ class SQLiteClient:
             
             return {
                 "memory_id": memory.id,
-                "title": memory.title,
                 "content": memory.content,
                 # Importance/Disclosure removed
                 "created_at": memory.created_at.isoformat() if memory.created_at else None,
@@ -828,7 +832,6 @@ class SQLiteClient:
             for memory in result.scalars().all():
                 memories.append({
                     "id": memory.id,
-                    "title": memory.title,
                     "content_snippet": memory.content[:200] + "..." if len(memory.content) > 200 else memory.content,
                     "created_at": memory.created_at.isoformat() if memory.created_at else None
                 })

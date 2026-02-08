@@ -7,7 +7,6 @@ hierarchical browser. Every path is just a node with content and children.
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional, List
 from db import get_sqlite_client
 
 router = APIRouter(prefix="/browse", tags=["browse"])
@@ -15,7 +14,6 @@ router = APIRouter(prefix="/browse", tags=["browse"])
 
 class NodeUpdate(BaseModel):
     content: str
-    title: Optional[str] = None
 
 
 @router.get("/node")
@@ -36,7 +34,6 @@ async def get_node(
     if not path:
         # Virtual Root Node
         memory = {
-            "title": "Root",
             "content": "",
             "importance": 0,
             "disclosure": None,
@@ -67,7 +64,6 @@ async def get_node(
         {
             "path": c["path"],
             "name": c["path"].split("/")[-1],  # Last segment
-            "title": c["title"],
             "importance": c["importance"],
             "content_snippet": c["content_snippet"]
         }
@@ -80,7 +76,7 @@ async def get_node(
             "path": path,
             "domain": domain,
             "uri": f"{domain}://{path}",
-            "title": memory["title"],
+            "name": path.split("/")[-1] if path else "root",
             "content": memory["content"],
             "importance": memory["importance"],
             "disclosure": memory["disclosure"],
@@ -112,7 +108,6 @@ async def update_node(
         path=path,
         domain=domain,
         content=body.content,
-        title=body.title
     )
     
     return {"success": True, "memory_id": result["new_memory_id"]}

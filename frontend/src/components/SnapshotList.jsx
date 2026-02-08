@@ -1,9 +1,41 @@
 import React from 'react';
 import clsx from 'clsx';
-import { Archive, RefreshCw } from 'lucide-react';
 
-// Nocturne 风格的 SnapshotList
-// 更加紧凑，更加具有列表感，去掉多余的装饰，强调“时间流”
+// Nocturne 風格の SnapshotList
+// Split snapshot types: path (create/alias/delete/meta) and memory (content)
+
+// Color/label config for each operation type
+const OP_CONFIG = {
+  create:         { label: "Create",  color: "emerald" },
+  create_alias:   { label: "Alias",   color: "emerald" },
+  delete:         { label: "Delete",  color: "rose" },
+  modify_meta:    { label: "Meta",    color: "cyan" },
+  modify_content: { label: "Content", color: "amber" },
+  modify:         { label: "Update",  color: "amber" },  // Legacy
+};
+
+const COLOR_CLASSES = {
+  emerald: {
+    active:  "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]",
+    idle:    "bg-emerald-900",
+    label:   "text-emerald-700",
+  },
+  rose: {
+    active:  "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]",
+    idle:    "bg-rose-900",
+    label:   "text-rose-700",
+  },
+  cyan: {
+    active:  "bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.6)]",
+    idle:    "bg-cyan-900",
+    label:   "text-cyan-700",
+  },
+  amber: {
+    active:  "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]",
+    idle:    "bg-amber-900",
+    label:   "text-amber-700",
+  },
+};
 
 const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
   if (snapshots.length === 0) {
@@ -18,8 +50,9 @@ const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
     <div className="flex flex-col">
         {snapshots.map((snap) => {
         const isSelected = snap.resource_id === selectedId;
-        const isCreate = snap.operation_type === 'create';
-        const isDelete = snap.operation_type === 'delete';
+        const opConfig = OP_CONFIG[snap.operation_type] || OP_CONFIG.modify;
+        const colors = COLOR_CLASSES[opConfig.color];
+        const displayName = snap.uri || snap.resource_id;
 
         return (
             <button
@@ -41,13 +74,7 @@ const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
                 {/* Status Indicator */}
                 <div className={clsx(
                     "flex-shrink-0 w-1.5 h-1.5 rounded-full transition-colors",
-                    isSelected 
-                        ? (isCreate ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" 
-                           : isDelete ? "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]"
-                           : "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]")
-                        : (isCreate ? "bg-emerald-900" 
-                           : isDelete ? "bg-rose-900"
-                           : "bg-amber-900")
+                    isSelected ? colors.active : colors.idle
                 )} />
                 
                 <div className="min-w-0 flex-1">
@@ -55,16 +82,14 @@ const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
                         "font-medium text-xs truncate transition-colors",
                         isSelected ? "text-slate-200" : "text-slate-400 group-hover:text-slate-300"
                     )}>
-                        {snap.resource_id}
+                        {displayName}
                     </div>
                     <div className="flex items-center gap-2 mt-0.5">
                         <span className={clsx(
                             "text-[10px] uppercase tracking-wider font-bold",
-                            isCreate ? "text-emerald-700" 
-                            : isDelete ? "text-rose-700"
-                            : "text-amber-700"
+                            colors.label
                         )}>
-                            {isCreate ? "Create" : isDelete ? "Delete" : "Update"}
+                            {opConfig.label}
                         </span>
                         <span className="text-[10px] text-slate-700">
                             {snap.resource_type}

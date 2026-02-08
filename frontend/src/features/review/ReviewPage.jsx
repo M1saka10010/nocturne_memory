@@ -10,10 +10,13 @@ import {
   ChevronRight, 
   Clock, 
   Database, 
+  FileText,
   History, 
   Layout, 
+  Link2,
   RefreshCw, 
   RotateCcw, 
+  Settings2,
   ShieldCheck, 
   Trash2, 
   X
@@ -141,7 +144,7 @@ function ReviewPage() {
   // Custom Metadata Renderer
   const renderMetadataChanges = () => {
     if (!diffData?.snapshot_data || !diffData?.current_data) return null;
-    const metaKeys = ['title', 'importance', 'disclosure'];
+    const metaKeys = ['importance', 'disclosure'];
     const changes = metaKeys.filter(key => {
       const oldVal = diffData.snapshot_data[key];
       const newVal = diffData.current_data[key];
@@ -257,19 +260,27 @@ function ReviewPage() {
               <div className="flex items-center gap-4 min-w-0">
                  <div className={clsx(
                     "w-10 h-10 rounded-full flex items-center justify-center border",
-                    selectedSnapshot.operation_type === 'create' 
-                        ? "bg-emerald-950/10 border-emerald-500/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]" 
-                        : selectedSnapshot.operation_type === 'delete'
-                            ? "bg-rose-950/10 border-rose-500/20 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.1)]"
-                            : "bg-amber-950/10 border-amber-500/20 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.1)]"
+                    {
+                      'create':         "bg-emerald-950/10 border-emerald-500/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]",
+                      'create_alias':   "bg-emerald-950/10 border-emerald-500/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]",
+                      'delete':         "bg-rose-950/10 border-rose-500/20 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.1)]",
+                      'modify_meta':    "bg-cyan-950/10 border-cyan-500/20 text-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.1)]",
+                      'modify_content': "bg-amber-950/10 border-amber-500/20 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.1)]",
+                      'modify':         "bg-amber-950/10 border-amber-500/20 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.1)]",
+                    }[selectedSnapshot.operation_type] || "bg-amber-950/10 border-amber-500/20 text-amber-400"
                  )}>
-                    {selectedSnapshot.operation_type === 'create' ? <Database size={18} /> 
-                     : selectedSnapshot.operation_type === 'delete' ? <Trash2 size={18} />
-                     : <RefreshCw size={18} />}
+                    {{
+                      'create':         <Database size={18} />,
+                      'create_alias':   <Link2 size={18} />,
+                      'delete':         <Trash2 size={18} />,
+                      'modify_meta':    <Settings2 size={18} />,
+                      'modify_content': <FileText size={18} />,
+                      'modify':         <RefreshCw size={18} />,
+                    }[selectedSnapshot.operation_type] || <RefreshCw size={18} />}
                  </div>
                  <div className="min-w-0 flex flex-col">
                     <h2 className="text-lg font-medium text-slate-100 truncate tracking-tight">
-                        {selectedSnapshot.resource_id}
+                        {selectedSnapshot.uri || selectedSnapshot.resource_id}
                     </h2>
                     <div className="flex items-center gap-2 text-xs text-slate-500">
                         <span className="bg-slate-800/50 px-1.5 py-0.5 rounded text-slate-400">{selectedSnapshot.resource_type}</span>

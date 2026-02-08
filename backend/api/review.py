@@ -5,7 +5,10 @@ This module provides endpoints for Salem to review and selectively rollback
 Nocturne's database modifications.
 
 Design Philosophy:
-- Rollback repoints the path to a previous version (not delete + recreate)
+- Snapshots are split into two dimensions matching the DB tables:
+  * PATH snapshots (resource_type="path"): track path creation/deletion/metadata changes
+  * MEMORY snapshots (resource_type="memory"): track content changes
+- This separation allows independent rollback of path vs content changes
 - Old versions are marked deprecated for review
 - Salem can permanently delete deprecated memories after review
 """
@@ -88,29 +91,7 @@ async def get_snapshot_detail(session_id: str, resource_id: str):
     )
 
 
-# ========== Diff Endpoints ==========
-
-async def _get_current_content(resource_type: str, data: dict) -> str:
-    """
-    获取资源的当前内容（用于 diff 对比）
-    """
-    if resource_type != "memory":
-        return "[UNKNOWN TYPE]"
-    
-    client = get_sqlite_client()
-    path = data.get("path")
-    domain = data.get("domain", "core")  # Default to core for legacy snapshots
-    
-    if not path:
-        return "[NO PATH]"
-    
-    memory = await client.get_memory_by_path(path, domain)
-    
-    if not memory:
-        return "[DELETED]"
-    
-    return memory.get("content", "")
-
+# ========== Diff Helpers ==========
 
 def _compute_diff(old_content: str, new_content: str) -> tuple:
     """
@@ -123,7 +104,6 @@ def _compute_diff(old_content: str, new_content: str) -> tuple:
     diff = difflib.unified_diff(old_lines, new_lines, fromfile='snapshot', tofile='current')
     unified = ''.join(diff)
     
-    # 简单统计
     additions = sum(1 for line in unified.splitlines() if line.startswith('+') and not line.startswith('+++'))
     deletions = sum(1 for line in unified.splitlines() if line.startswith('-') and not line.startswith('---'))
     
@@ -135,17 +115,210 @@ def _compute_diff(old_content: str, new_content: str) -> tuple:
     return unified, summary
 
 
+async def _get_memory_by_path_from_data(data: dict):
+    """Helper: fetch current memory via path/domain stored in snapshot data."""
+    client = get_sqlite_client()
+    path = data.get("path")
+    domain = data.get("domain", "core")
+    if not path:
+        return None
+    return await client.get_memory_by_path(path, domain)
+
+
+# ========== Diff: PATH snapshots ==========
+
+async def _diff_path_create(snapshot: dict, resource_id: str) -> dict:
+    """Diff for path creation (create_memory). Rollback = delete memory + path."""
+    snapshot_data = {"content": None, "importance": None, "disclosure": None}
+    current_memory = await _get_memory_by_path_from_data(snapshot["data"])
+    
+    if not current_memory:
+        current_data = {"content": "[DELETED]", "importance": None, "disclosure": None}
+        summary = "Created then deleted"
+        has_changes = False
+    else:
+        current_data = {
+            "content": current_memory.get("content", ""),
+            "importance": current_memory.get("importance"),
+            "disclosure": current_memory.get("disclosure")
+        }
+        line_count = len(current_data["content"].splitlines())
+        summary = f"Created: +{line_count} lines (rollback = delete)"
+        has_changes = True
+    
+    unified = f"--- /dev/null\n+++ {resource_id}\n"
+    if current_data["content"] and current_data["content"] != "[DELETED]":
+        for line in current_data["content"].splitlines():
+            unified += f"+{line}\n"
+    
+    return {"snapshot_data": snapshot_data, "current_data": current_data,
+            "unified": unified, "summary": summary, "has_changes": has_changes}
+
+
+async def _diff_path_create_alias(snapshot: dict, resource_id: str) -> dict:
+    """Diff for alias creation. Rollback = remove alias path only."""
+    target_uri = snapshot["data"].get("target_uri", "unknown")
+    snapshot_data = {"content": None, "importance": None, "disclosure": None}
+    
+    current_memory = await _get_memory_by_path_from_data(snapshot["data"])
+    
+    if not current_memory:
+        current_data = {"content": "[ALIAS REMOVED]", "importance": None, "disclosure": None}
+        summary = "Alias created then removed"
+        has_changes = False
+    else:
+        current_data = {
+            "content": current_memory.get("content", ""),
+            "importance": current_memory.get("importance"),
+            "disclosure": current_memory.get("disclosure")
+        }
+        summary = f"Alias created → {target_uri} (rollback = remove alias)"
+        has_changes = True
+    
+    unified = f"--- /dev/null\n+++ {resource_id} (alias → {target_uri})\n"
+    if current_data["content"] and current_data["content"] != "[ALIAS REMOVED]":
+        unified += f"+[Alias pointing to: {target_uri}]\n"
+    
+    return {"snapshot_data": snapshot_data, "current_data": current_data,
+            "unified": unified, "summary": summary, "has_changes": has_changes}
+
+
+async def _diff_path_delete(snapshot: dict, resource_id: str) -> dict:
+    """Diff for path deletion. Rollback = restore path."""
+    snapshot_data = {
+        "content": snapshot["data"].get("content", ""),
+        "importance": snapshot["data"].get("importance"),
+        "disclosure": snapshot["data"].get("disclosure")
+    }
+    
+    current_memory = await _get_memory_by_path_from_data(snapshot["data"])
+    
+    if not current_memory:
+        current_data = {"content": "[DELETED]", "importance": None, "disclosure": None}
+    else:
+        current_data = {
+            "content": current_memory.get("content", ""),
+            "importance": current_memory.get("importance"),
+            "disclosure": current_memory.get("disclosure")
+        }
+    
+    unified, summary = _compute_diff(snapshot_data["content"], current_data["content"])
+    
+    if current_data["content"] == "[DELETED]":
+        summary = "Deleted (rollback = restore)"
+    
+    return {"snapshot_data": snapshot_data, "current_data": current_data,
+            "unified": unified, "summary": summary, "has_changes": True}
+
+
+async def _diff_path_modify_meta(snapshot: dict, resource_id: str) -> dict:
+    """Diff for path metadata change (importance/disclosure). Rollback = restore metadata."""
+    snapshot_data = {
+        "content": None,
+        "importance": snapshot["data"].get("importance"),
+        "disclosure": snapshot["data"].get("disclosure")
+    }
+    
+    current_memory = await _get_memory_by_path_from_data(snapshot["data"])
+    
+    if not current_memory:
+        current_data = {"content": None, "importance": None, "disclosure": None}
+        summary = "Path no longer exists"
+        has_changes = False
+    else:
+        current_data = {
+            "content": None,
+            "importance": current_memory.get("importance"),
+            "disclosure": current_memory.get("disclosure")
+        }
+        
+        meta_changes = []
+        for key in ["importance", "disclosure"]:
+            if snapshot_data.get(key) != current_data.get(key):
+                meta_changes.append(f"{key}: {snapshot_data.get(key)} → {current_data.get(key)}")
+        
+        if meta_changes:
+            summary = "Metadata: " + ", ".join(meta_changes)
+            has_changes = True
+        else:
+            summary = "No metadata changes"
+            has_changes = False
+    
+    return {"snapshot_data": snapshot_data, "current_data": current_data,
+            "unified": "", "summary": summary, "has_changes": has_changes}
+
+
+# ========== Diff: MEMORY snapshots ==========
+
+async def _diff_memory_content(snapshot: dict, resource_id: str) -> dict:
+    """Diff for memory content change. Rollback = rollback_to_memory."""
+    snapshot_data = {
+        "content": snapshot["data"].get("content", ""),
+        "importance": None,
+        "disclosure": None
+    }
+    
+    current_memory = await _get_memory_by_path_from_data(snapshot["data"])
+    
+    # Fallback: if original path was deleted, try alternative paths from snapshot
+    if not current_memory:
+        for alt_uri_str in snapshot["data"].get("all_paths", []):
+            if "://" in alt_uri_str:
+                alt_domain, alt_path = alt_uri_str.split("://", 1)
+            else:
+                alt_domain, alt_path = "core", alt_uri_str
+            orig_path = snapshot["data"].get("path")
+            orig_domain = snapshot["data"].get("domain", "core")
+            if alt_path == orig_path and alt_domain == orig_domain:
+                continue
+            client = get_sqlite_client()
+            current_memory = await client.get_memory_by_path(alt_path, alt_domain)
+            if current_memory:
+                break
+    
+    if not current_memory:
+        current_data = {"content": "[PATH DELETED]", "importance": None, "disclosure": None}
+    else:
+        current_data = {
+            "content": current_memory.get("content", ""),
+            "importance": None,
+            "disclosure": None
+        }
+    
+    unified, summary = _compute_diff(snapshot_data["content"], current_data.get("content", ""))
+    has_changes = snapshot_data["content"] != current_data.get("content", "")
+    
+    return {"snapshot_data": snapshot_data, "current_data": current_data,
+            "unified": unified, "summary": summary, "has_changes": has_changes}
+
+
+# ========== Diff Endpoint ==========
+
+# Dispatch table: (resource_type, operation_type) → diff handler
+_DIFF_HANDLERS = {
+    ("path", "create"):       _diff_path_create,
+    ("path", "create_alias"): _diff_path_create_alias,
+    ("path", "delete"):       _diff_path_delete,
+    ("path", "modify_meta"):  _diff_path_modify_meta,
+    ("memory", "modify_content"): _diff_memory_content,
+}
+
+# Legacy compatibility: old snapshots used resource_type="memory" for everything
+_LEGACY_DIFF_HANDLERS = {
+    "create":       _diff_path_create,
+    "create_alias": _diff_path_create_alias,
+    "delete":       _diff_path_delete,
+    "modify":       _diff_memory_content,  # Old "modify" = content change
+}
+
+
 @router.get("/sessions/{session_id}/diff/{resource_id:path}", response_model=ResourceDiff)
 async def get_resource_diff(session_id: str, resource_id: str):
     """
     获取快照与当前状态的 diff
-    
-    这是回滚前查看变化的主要端点。
-    
-    对于 modify 类型：显示内容变化
-    对于 create 类型：显示新创建的内容（快照为空）
+
+    Handles both new split snapshots (path/memory) and legacy snapshots.
     """
-    # Ensure resource_id is decoded
     resource_id = unquote(resource_id)
     
     manager = get_snapshot_manager()
@@ -157,247 +330,188 @@ async def get_resource_diff(session_id: str, resource_id: str):
             detail=f"Snapshot for '{resource_id}' not found in session '{session_id}'"
         )
     
+    resource_type = snapshot["resource_type"]
     operation_type = snapshot["data"].get("operation_type", "modify")
     
-    if operation_type == "create":
-        # For create operations, snapshot is empty
-        snapshot_data = {"content": None, "title": None, "importance": None, "disclosure": None}
-        
-        current_memory = await _get_current_memory(snapshot["resource_type"], snapshot["data"])
-        
-        if not current_memory:
-            current_data = {"content": "[DELETED]", "title": None, "importance": None, "disclosure": None}
-            summary = "Created then deleted"
-            has_changes = False
-        else:
-            current_data = {
-                "content": current_memory.get("content", ""),
-                "title": current_memory.get("title"),
-                "importance": current_memory.get("importance"),
-                "disclosure": current_memory.get("disclosure")
-            }
-            line_count = len(current_data["content"].splitlines())
-            summary = f"Created: +{line_count} lines (rollback = delete)"
-            has_changes = True
-        
-        unified = f"--- /dev/null\n+++ {resource_id}\n"
-        if current_data["content"] and current_data["content"] != "[DELETED]":
-            for line in current_data["content"].splitlines():
-                unified += f"+{line}\n"
-
-    elif operation_type == "delete":
-        # For delete operations: Snapshot has content, Current is [DELETED]
-        snapshot_data = {
-            "content": snapshot["data"].get("content", ""),
-            "title": snapshot["data"].get("title"),
-            "importance": snapshot["data"].get("importance"),
-            "disclosure": snapshot["data"].get("disclosure")
-        }
-        
-        current_memory = await _get_current_memory(snapshot["resource_type"], snapshot["data"])
-        
-        if not current_memory:
-            current_data = {"content": "[DELETED]", "title": None, "importance": None, "disclosure": None}
-        else:
-            # Path might have been re-created manually after deletion
-            current_data = {
-                "content": current_memory.get("content", ""),
-                "title": current_memory.get("title"),
-                "importance": current_memory.get("importance"),
-                "disclosure": current_memory.get("disclosure")
-            }
-        
-        unified, summary = _compute_diff(snapshot_data["content"], current_data["content"])
-        
-        if current_data["content"] == "[DELETED]":
-            summary = "Deleted (rollback = restore)"
-        
-        has_changes = True
-
-    else:
-        # For modify operations
-        snapshot_data = {
-            "content": snapshot["data"].get("content", ""),
-            "title": snapshot["data"].get("title"),
-            "importance": snapshot["data"].get("importance"),
-            "disclosure": snapshot["data"].get("disclosure")
-        }
-        
-        client = get_sqlite_client()
-        path = snapshot["data"].get("path")
-        domain = snapshot["data"].get("domain", "core")
-        current_memory = await client.get_memory_by_path(path, domain)
-        
-        if not current_memory:
-            current_data = {"content": "[DELETED]", "title": None, "importance": None, "disclosure": None}
-        else:
-            current_data = {
-                "content": current_memory.get("content", ""),
-                "title": current_memory.get("title"),
-                "importance": current_memory.get("importance"),
-                "disclosure": current_memory.get("disclosure")
-            }
-        
-        unified, summary = _compute_diff(snapshot_data["content"], current_data["content"])
-        has_content_changes = snapshot_data["content"] != current_data["content"]
-        
-        # Check metadata changes
-        meta_changes = []
-        for key in ["title", "importance", "disclosure"]:
-            if snapshot_data.get(key) != current_data.get(key):
-                meta_changes.append(f"{key}: {snapshot_data.get(key)} -> {current_data.get(key)}")
-        
-        if meta_changes:
-            has_changes = True
-            meta_summary = "Metadata: " + ", ".join(meta_changes)
-            if summary == "No changes":
-                summary = meta_summary
-            else:
-                summary += f" | {meta_summary}"
-        else:
-            has_changes = has_content_changes
+    # Try new dispatch table first, then legacy fallback
+    handler = _DIFF_HANDLERS.get((resource_type, operation_type))
+    if not handler:
+        handler = _LEGACY_DIFF_HANDLERS.get(operation_type)
+    if not handler:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown snapshot type: {resource_type}/{operation_type}"
+        )
+    
+    result = await handler(snapshot, resource_id)
     
     return ResourceDiff(
         resource_id=resource_id,
-        resource_type=snapshot["resource_type"],
+        resource_type=resource_type,
         snapshot_time=snapshot["snapshot_time"],
-        snapshot_data=snapshot_data,
-        current_data=current_data,
-        diff_unified=unified,
-        diff_summary=summary,
-        has_changes=has_changes
+        snapshot_data=result["snapshot_data"],
+        current_data=result["current_data"],
+        diff_unified=result["unified"],
+        diff_summary=result["summary"],
+        has_changes=result["has_changes"]
     )
 
-async def _get_current_memory(resource_type: str, data: dict):
-    """Helper to get current memory object"""
-    if resource_type != "memory":
-        return None
-    
+
+# ========== Rollback Helpers ==========
+
+async def _rollback_path(data: dict) -> dict:
+    """Rollback a path-level operation."""
     client = get_sqlite_client()
     path = data.get("path")
     domain = data.get("domain", "core")
-    
-    if not path:
-        return None
-        
-    return await client.get_memory_by_path(path, domain)
-
-
-# ========== Rollback Endpoints ==========
-
-async def _rollback_memory(data: dict, task_description: str) -> dict:
-    """执行 Memory 回滚"""
-    client = get_sqlite_client()
-    path = data.get("path")
-    domain = data.get("domain", "core")  # Default to core for legacy snapshots
-    operation_type = data.get("operation_type", "modify")
+    operation_type = data.get("operation_type")
     uri = data.get("uri", f"{domain}://{path}")
     
     if operation_type == "create":
-        # Rollback of create = delete the memory
+        # Rollback of create = delete the memory and path
         current = await client.get_memory_by_path(path, domain)
         if not current:
-            # Already deleted, nothing to do
-            return {"new_version": None, "deleted": True}
-        
-        # True rollback: permanently delete the memory and all its paths
+            return {"deleted": True}
         try:
-            memory_id = current.get("id")
-            await client.permanently_delete_memory(memory_id)
-            return {"new_version": None, "deleted": True}
+            await client.permanently_delete_memory(current["id"])
+            return {"deleted": True}
         except ValueError as e:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot delete memory '{uri}': {str(e)}"
-            )
-            
+            raise HTTPException(status_code=409, detail=f"Cannot delete '{uri}': {e}")
+    
+    elif operation_type == "create_alias":
+        # Rollback of alias creation = remove the alias path only
+        try:
+            await client.remove_path(path, domain)
+        except ValueError:
+            pass  # Already removed
+        return {"deleted": True, "alias_removed": True}
+    
     elif operation_type == "delete":
         # Rollback of delete = restore the path
         try:
             await client.restore_path(
-                path=path,
-                domain=domain,
+                path=path, domain=domain,
                 memory_id=data.get("memory_id"),
                 importance=data.get("importance", 0),
                 disclosure=data.get("disclosure")
             )
-            return {"new_version": data.get("memory_id"), "restored": True}
+            return {"restored": True, "new_version": data.get("memory_id")}
         except ValueError as e:
-            # Likely path collision if it was re-created
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot restore path '{uri}': {str(e)}"
-            )
-            
-    else:
-        # Rollback of modify = restore to snapshot version
-        snapshot_memory_id = data.get("memory_id")
-        
-        if not snapshot_memory_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Snapshot missing memory_id"
-            )
-        
+            raise HTTPException(status_code=409, detail=f"Cannot restore '{uri}': {e}")
+    
+    elif operation_type == "modify_meta":
+        # Rollback of metadata change = restore original importance/disclosure
         current = await client.get_memory_by_path(path, domain)
         if not current:
-            raise HTTPException(
-                status_code=404,
-                detail=f"URI '{uri}' no longer exists, cannot rollback"
-            )
+            raise HTTPException(status_code=404, detail=f"'{uri}' no longer exists")
         
-        # Check if there's actually anything to rollback (content OR metadata)
-        snapshot_importance = data.get("importance")
-        snapshot_disclosure = data.get("disclosure")
-        
-        current_importance = current.get("importance")
-        current_disclosure = current.get("disclosure")
-        
-        # Check if the memory version has changed (due to content OR title update)
-        # Title is stored on Memory, so title change = new memory version
-        # We check ID mismatch to catch both content and title changes
-        has_version_change = snapshot_memory_id != current.get("id")
-        
-        # Check path metadata changes (importance/disclosure are on Path, not Memory)
-        has_path_metadata_change = (
-            snapshot_importance != current_importance or
-            snapshot_disclosure != current_disclosure
+        await client.update_memory(
+            path=path, domain=domain,
+            importance=data.get("importance"),
+            disclosure=data.get("disclosure")
         )
-        
-        if not has_version_change and not has_path_metadata_change:
-            return {"new_version": current.get("id"), "no_change": True}
-        
-        restored_memory_id = current.get("id")
-        
-        # Rollback content/title: repoint path to snapshot memory
-        if has_version_change:
-            result = await client.rollback_to_memory(path, snapshot_memory_id, domain)
-            restored_memory_id = result["restored_memory_id"]
-        
-        # Rollback Path metadata (importance/disclosure) if changed
-        if has_path_metadata_change:
-            await client.update_memory(
-                path=path,
-                domain=domain,
-                importance=snapshot_importance,
-                disclosure=snapshot_disclosure
-            )
-        
-        return {"new_version": restored_memory_id}
+        return {"metadata_restored": True}
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown path operation: {operation_type}")
 
+
+async def _rollback_memory_content(data: dict) -> dict:
+    """Rollback a memory content change."""
+    client = get_sqlite_client()
+    memory_id = data.get("memory_id")
+    path = data.get("path")
+    domain = data.get("domain", "core")
+    uri = data.get("uri", f"{domain}://{path}")
+    
+    if not memory_id:
+        raise HTTPException(status_code=400, detail="Snapshot missing memory_id")
+    
+    current = await client.get_memory_by_path(path, domain)
+    
+    # Fallback: if original path was deleted, try alternative paths from snapshot
+    if not current:
+        for alt_uri_str in data.get("all_paths", []):
+            if "://" in alt_uri_str:
+                alt_domain, alt_path = alt_uri_str.split("://", 1)
+            else:
+                alt_domain, alt_path = "core", alt_uri_str
+            if alt_path == path and alt_domain == domain:
+                continue  # Skip the one we already tried
+            current = await client.get_memory_by_path(alt_path, alt_domain)
+            if current:
+                path, domain = alt_path, alt_domain
+                break
+    
+    if not current:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Path '{uri}' no longer exists and no alternative paths found. Cannot rollback content."
+        )
+    
+    if memory_id == current.get("id"):
+        return {"no_change": True, "new_version": memory_id}
+    
+    result = await client.rollback_to_memory(path, memory_id, domain)
+    return {"new_version": result["restored_memory_id"]}
+
+
+async def _rollback_legacy_modify(data: dict) -> dict:
+    """Rollback for legacy 'modify' snapshots that combined content + metadata."""
+    client = get_sqlite_client()
+    path = data.get("path")
+    domain = data.get("domain", "core")
+    uri = data.get("uri", f"{domain}://{path}")
+    snapshot_memory_id = data.get("memory_id")
+    
+    if not snapshot_memory_id:
+        raise HTTPException(status_code=400, detail="Snapshot missing memory_id")
+    
+    current = await client.get_memory_by_path(path, domain)
+    if not current:
+        raise HTTPException(status_code=404, detail=f"'{uri}' no longer exists")
+    
+    has_version_change = snapshot_memory_id != current.get("id")
+    has_meta_change = (
+        data.get("importance") != current.get("importance") or
+        data.get("disclosure") != current.get("disclosure")
+    )
+    
+    if not has_version_change and not has_meta_change:
+        return {"no_change": True, "new_version": current.get("id")}
+    
+    restored_id = current.get("id")
+    
+    if has_version_change:
+        result = await client.rollback_to_memory(path, snapshot_memory_id, domain)
+        restored_id = result["restored_memory_id"]
+    
+    if has_meta_change:
+        await client.update_memory(
+            path=path, domain=domain,
+            importance=data.get("importance"),
+            disclosure=data.get("disclosure")
+        )
+    
+    return {"new_version": restored_id}
+
+
+# ========== Rollback Endpoint ==========
 
 @router.post("/sessions/{session_id}/rollback/{resource_id:path}", response_model=RollbackResponse)
 async def rollback_resource(session_id: str, resource_id: str, request: RollbackRequest):
     """
     执行回滚：将资源恢复到快照状态
-    
-    两种回滚模式：
-    1. **modify 回滚**：将 path 指回快照版本的 memory（被跳过的版本标记 deprecated）
-    2. **create 回滚**：删除新创建的 memory和path
-    
-    这是 Salem 控制 Nocturne 修改的主要手段。
+
+    路径快照 (resource_type="path"):
+    - create → 删除新创建的 memory 和 path
+    - create_alias → 移除别名路径
+    - delete → 恢复被删除的路径
+    - modify_meta → 恢复 importance/disclosure
+
+    内容快照 (resource_type="memory"):
+    - modify_content → 将 path 指回旧版本的 memory
     """
-    # Ensure resource_id is decoded
     resource_id = unquote(resource_id)
     
     manager = get_snapshot_manager()
@@ -412,30 +526,27 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
     resource_type = snapshot["resource_type"]
     data = snapshot["data"]
     operation_type = data.get("operation_type", "modify")
-    task_desc = request.task_description or "Rollback to snapshot by Salem"
     
     try:
-        if resource_type == "memory":
-            result = await _rollback_memory(data, task_desc)
+        # Dispatch based on resource_type
+        if resource_type == "path":
+            result = await _rollback_path(data)
+        elif resource_type == "memory":
+            if operation_type == "modify_content":
+                result = await _rollback_memory_content(data)
+            elif operation_type == "modify":
+                # Legacy: old "modify" snapshots with resource_type="memory"
+                result = await _rollback_legacy_modify(data)
+            elif operation_type in ("create", "delete", "create_alias"):
+                # Legacy: old snapshots used resource_type="memory" for all operations
+                result = await _rollback_path(data)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown memory operation: {operation_type}")
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown resource type: {resource_type}"
-            )
+            raise HTTPException(status_code=400, detail=f"Unknown resource type: {resource_type}")
         
-        # Different message based on operation type
-        if operation_type == "create":
-            if result.get("deleted"):
-                message = f"Successfully deleted created resource '{resource_id}'."
-            else:
-                message = "Resource was already deleted."
-        elif operation_type == "delete":
-             message = f"Successfully restored deleted resource '{resource_id}'."
-        else:
-            if result.get("no_change"):
-                message = "No changes detected. Content already matches snapshot."
-            else:
-                message = f"Successfully restored to snapshot version (memory_id={result.get('new_version')})."
+        # Build response message
+        message = _build_rollback_message(resource_id, operation_type, result)
         
         return RollbackResponse(
             resource_id=resource_id,
@@ -455,6 +566,23 @@ async def rollback_resource(session_id: str, resource_id: str, request: Rollback
             message=f"Rollback failed: {str(e)}",
             new_version=None
         )
+
+
+def _build_rollback_message(resource_id: str, operation_type: str, result: dict) -> str:
+    """Generate a human-readable rollback result message."""
+    if result.get("no_change"):
+        return "No changes detected. Already matches snapshot."
+    
+    messages = {
+        "create":         f"Deleted created resource '{resource_id}'.",
+        "create_alias":   f"Removed alias '{resource_id}'.",
+        "delete":         f"Restored deleted resource '{resource_id}'.",
+        "modify_meta":    f"Restored metadata for '{resource_id}'.",
+        "modify_content": f"Restored content to snapshot version (memory_id={result.get('new_version')}).",
+        "modify":         f"Restored to snapshot version (memory_id={result.get('new_version')}).",
+    }
+    
+    return messages.get(operation_type, f"Rollback completed for '{resource_id}'.")
 
 
 @router.delete("/sessions/{session_id}/snapshots/{resource_id:path}")
