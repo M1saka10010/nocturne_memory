@@ -1,53 +1,88 @@
 import React from 'react';
-import { format } from 'date-fns';
-import { AlertCircle, CheckCircle2, Clock, FileText, GitCommit, Trash2, Undo2 } from 'lucide-react';
 import clsx from 'clsx';
+import { Archive, RefreshCw } from 'lucide-react';
+
+// Nocturne 风格的 SnapshotList
+// 更加紧凑，更加具有列表感，去掉多余的装饰，强调“时间流”
 
 const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
-  if (!snapshots || snapshots.length === 0) {
+  if (snapshots.length === 0) {
     return (
-      <div className="p-8 text-center text-slate-500">
-        <CheckCircle2 className="w-12 h-12 mx-auto mb-2 opacity-20" />
-        <p>No pending reviews.</p>
+      <div className="text-center py-10 text-slate-600 text-xs tracking-wide uppercase">
+        Empty Sequence
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-slate-800">
-      {snapshots.map((snap) => (
-        <div 
-          key={snap.resource_id}
-          onClick={() => onSelect(snap)}
-          className={clsx(
-            "p-4 cursor-pointer transition-colors hover:bg-slate-800/50 group",
-            selectedId === snap.resource_id ? "bg-slate-800 border-l-2 border-indigo-500" : "border-l-2 border-transparent"
-          )}
-        >
-          <div className="flex items-start justify-between mb-1">
-            <span className={clsx(
-              "text-xs font-bold px-1.5 py-0.5 rounded uppercase tracking-wide",
-              snap.operation_type === 'create' ? "bg-emerald-900/50 text-emerald-400" : "bg-amber-900/50 text-amber-400"
-            )}>
-              {snap.operation_type || 'modify'}
-            </span>
-            <span className="text-xs text-slate-500 flex items-center gap-1">
-              <Clock size={12} />
-              {format(new Date(snap.snapshot_time), 'HH:mm:ss')}
-            </span>
-          </div>
-          
-          <h3 className="text-sm font-medium text-slate-200 truncate mb-1" title={snap.resource_id}>
-            {snap.resource_id}
-          </h3>
-          
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="bg-slate-800 px-1.5 rounded text-slate-400 border border-slate-700">
-              {snap.resource_type}
-            </span>
-          </div>
-        </div>
-      ))}
+    <div className="flex flex-col">
+        {snapshots.map((snap) => {
+        const isSelected = snap.resource_id === selectedId;
+        const isCreate = snap.operation_type === 'create';
+        const isDelete = snap.operation_type === 'delete';
+
+        return (
+            <button
+            key={snap.resource_id}
+            onClick={() => onSelect(snap)}
+            className={clsx(
+                "group relative text-left py-3 px-5 border-l-2 transition-all duration-200 outline-none w-full hover:bg-white/[0.02]",
+                isSelected 
+                ? "border-indigo-500 bg-white/[0.03]" 
+                : "border-transparent text-slate-500 hover:text-slate-300"
+            )}
+            >
+            {/* Active Glow Effect */}
+            {isSelected && (
+                <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-transparent pointer-events-none" />
+            )}
+
+            <div className="flex items-center gap-3 relative z-10">
+                {/* Status Indicator */}
+                <div className={clsx(
+                    "flex-shrink-0 w-1.5 h-1.5 rounded-full transition-colors",
+                    isSelected 
+                        ? (isCreate ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" 
+                           : isDelete ? "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]"
+                           : "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]")
+                        : (isCreate ? "bg-emerald-900" 
+                           : isDelete ? "bg-rose-900"
+                           : "bg-amber-900")
+                )} />
+                
+                <div className="min-w-0 flex-1">
+                    <div className={clsx(
+                        "font-medium text-xs truncate transition-colors",
+                        isSelected ? "text-slate-200" : "text-slate-400 group-hover:text-slate-300"
+                    )}>
+                        {snap.resource_id}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                        <span className={clsx(
+                            "text-[10px] uppercase tracking-wider font-bold",
+                            isCreate ? "text-emerald-700" 
+                            : isDelete ? "text-rose-700"
+                            : "text-amber-700"
+                        )}>
+                            {isCreate ? "Create" : isDelete ? "Delete" : "Update"}
+                        </span>
+                        <span className="text-[10px] text-slate-700">
+                            {snap.resource_type}
+                        </span>
+                    </div>
+                </div>
+                
+                {/* Time Indicator (Only show on hover or selected) */}
+                <div className={clsx(
+                    "text-[10px] font-mono transition-opacity",
+                    isSelected ? "text-indigo-400/50 opacity-100" : "text-slate-700 opacity-0 group-hover:opacity-100"
+                )}>
+                    {new Date(snap.snapshot_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </div>
+            </div>
+            </button>
+        );
+        })}
     </div>
   );
 };

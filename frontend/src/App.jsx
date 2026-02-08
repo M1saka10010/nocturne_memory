@@ -4,10 +4,7 @@ import { ShieldCheck, Database, LayoutGrid, Sparkles } from 'lucide-react';
 import clsx from 'clsx';
 
 import ReviewPage from './features/review/ReviewPage';
-import MemoryCatalog from './features/memory/MemoryCatalog';
-import EntityDetail from './features/memory/EntityDetail';
-import RelationDetail from './features/memory/RelationDetail';
-import ChapterDetail from './features/memory/ChapterDetail';
+import MemoryBrowser from './features/memory/MemoryBrowser';
 import MaintenancePage from './features/maintenance/MaintenancePage';
 
 function Layout() {
@@ -63,18 +60,7 @@ function Layout() {
            
            <Route path="/review" element={<ReviewPage />} />
            
-           <Route path="/memory" element={<MemoryCatalog />}>
-              <Route index element={
-                  <div className="flex flex-col items-center justify-center h-full text-slate-600 gap-4">
-                     <Database size={64} className="opacity-20" />
-                     <p>Select an entity to explore memory</p>
-                  </div>
-              } />
-              <Route path="entity/:entityId" element={<EntityDetail />} />
-              <Route path="relation/:viewerId/:targetId" element={<RelationDetail />} />
-              {/* Prefer semantic, stable URLs for chapters (latest version) */}
-              <Route path="chapter/:viewerId/:targetId/:chapterName" element={<ChapterDetail />} />
-           </Route>
+           <Route path="/memory" element={<MemoryBrowser />} />
            
            <Route path="/maintenance" element={<MaintenancePage />} />
          </Routes>
