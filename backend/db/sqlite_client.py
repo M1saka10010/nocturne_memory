@@ -38,12 +38,19 @@ class Memory(Base):
     Note: The 'title' column was removed. A memory's display name is now
     derived from the last segment of its path(s) in the paths table.
     Existing DB columns named 'title' are simply ignored by SQLAlchemy.
+    
+    Version chain: When a memory is updated, the old version's `migrated_to`
+    field points to the new version's ID, forming a singly-linked list:
+        Memory(id=1, migrated_to=5) → Memory(id=5, migrated_to=12) → Memory(id=12, migrated_to=NULL)
+    When a middle node is permanently deleted, the chain is repaired by
+    skipping over it (A→B→C, delete B → A→C).
     """
     __tablename__ = "memories"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     content = Column(Text, nullable=False)
     deprecated = Column(Boolean, default=False)  # Marked for review/deletion
+    migrated_to = Column(Integer, nullable=True)  # Points to successor memory ID (version chain)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationship to paths
@@ -101,10 +108,21 @@ class SQLiteClient:
         )
     
     async def init_db(self):
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, and run migrations for schema changes."""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Migration: add migrated_to column if not present (for existing DBs)
+            await conn.run_sync(self._migrate_add_migrated_to)
     
+    @staticmethod
+    def _migrate_add_migrated_to(connection):
+        """Add migrated_to column to memories table if it doesn't exist."""
+        from sqlalchemy import inspect, text
+        inspector = inspect(connection)
+        columns = [col["name"] for col in inspector.get_columns("memories")]
+        if "migrated_to" not in columns:
+            connection.execute(text("ALTER TABLE memories ADD COLUMN migrated_to INTEGER"))
+
     async def close(self):
         """Close the database connection."""
         await self.engine.dispose()
@@ -192,6 +210,7 @@ class SQLiteClient:
                 "content": memory.content,
                 # Importance/Disclosure removed as they are path-dependent
                 "deprecated": memory.deprecated,
+                "migrated_to": memory.migrated_to,
                 "created_at": memory.created_at.isoformat() if memory.created_at else None,
                 "paths": paths
             }
@@ -459,9 +478,12 @@ class SQLiteClient:
                 await session.flush()
                 new_memory_id = new_memory.id
                 
-                # Mark old as deprecated
+                # Mark old as deprecated and set migration pointer to new version
                 await session.execute(
-                    update(Memory).where(Memory.id == old_id).values(deprecated=True)
+                    update(Memory).where(Memory.id == old_id).values(
+                        deprecated=True,
+                        migrated_to=new_memory.id
+                    )
                 )
                 
                 # Repoint ALL paths pointing to the old memory to the new memory
@@ -512,14 +534,20 @@ class SQLiteClient:
             if not target.scalar_one_or_none():
                 raise ValueError(f"Target memory ID {target_memory_id} not found")
             
-            # 3. Mark current as deprecated
+            # 3. Mark current as deprecated and point to restored version
             await session.execute(
-                update(Memory).where(Memory.id == current_id).values(deprecated=True)
+                update(Memory).where(Memory.id == current_id).values(
+                    deprecated=True,
+                    migrated_to=target_memory_id
+                )
             )
             
-            # 4. Un-deprecate target
+            # 4. Un-deprecate target and clear its migration pointer (it's the active version now)
             await session.execute(
-                update(Memory).where(Memory.id == target_memory_id).values(deprecated=False)
+                update(Memory).where(Memory.id == target_memory_id).values(
+                    deprecated=False,
+                    migrated_to=None
+                )
             )
             
             # 5. Repoint ALL paths that were pointing to the old memory
@@ -811,6 +839,7 @@ class SQLiteClient:
                 # Importance/Disclosure removed
                 "created_at": memory.created_at.isoformat() if memory.created_at else None,
                 "deprecated": memory.deprecated,
+                "migrated_to": memory.migrated_to,
                 "paths": paths
             }
 
@@ -833,6 +862,7 @@ class SQLiteClient:
                 memories.append({
                     "id": memory.id,
                     "content_snippet": memory.content[:200] + "..." if len(memory.content) > 200 else memory.content,
+                    "migrated_to": memory.migrated_to,
                     "created_at": memory.created_at.isoformat() if memory.created_at else None
                 })
             
@@ -842,6 +872,13 @@ class SQLiteClient:
         """
         Permanently delete a memory (Salem only).
         
+        Before deletion, repairs the version chain: if any other memory
+        has migrated_to pointing to this one, it will be updated to skip
+        over and point to this memory's own migrated_to target.
+        
+        Example: A(migrated_to=B) → B(migrated_to=C) → C
+                 Delete B → A(migrated_to=C) → C
+        
         Args:
             memory_id: Memory ID to delete
             
@@ -849,12 +886,30 @@ class SQLiteClient:
             Deletion info
         """
         async with self.session() as session:
-            # First remove any paths pointing to this memory
+            # 1. Get the memory being deleted to find its successor
+            target_result = await session.execute(
+                select(Memory.migrated_to).where(Memory.id == memory_id)
+            )
+            target_row = target_result.first()
+            if not target_row:
+                raise ValueError(f"Memory ID {memory_id} not found")
+            
+            successor_id = target_row[0]  # The deleted node's migrated_to (may be None)
+            
+            # 2. Repair the chain: any memory pointing to the deleted node
+            #    should now point to the deleted node's successor
+            await session.execute(
+                update(Memory)
+                .where(Memory.migrated_to == memory_id)
+                .values(migrated_to=successor_id)
+            )
+            
+            # 3. Remove any paths pointing to this memory
             await session.execute(
                 delete(Path).where(Path.memory_id == memory_id)
             )
             
-            # Then delete the memory
+            # 4. Delete the memory
             result = await session.execute(
                 delete(Memory).where(Memory.id == memory_id)
             )
@@ -863,7 +918,8 @@ class SQLiteClient:
                 raise ValueError(f"Memory ID {memory_id} not found")
             
             return {
-                "deleted_memory_id": memory_id
+                "deleted_memory_id": memory_id,
+                "chain_repaired_to": successor_id
             }
 
 # =============================================================================

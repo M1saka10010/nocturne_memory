@@ -184,9 +184,24 @@ async def _diff_path_create_alias(snapshot: dict, resource_id: str) -> dict:
 
 
 async def _diff_path_delete(snapshot: dict, resource_id: str) -> dict:
-    """Diff for path deletion. Rollback = restore path."""
+    """Diff for path deletion. Rollback = restore path.
+    
+    Old content is fetched from DB via memory_id rather than from the
+    snapshot file, leveraging the version chain.
+    """
+    client = get_sqlite_client()
+    
+    # --- Retrieve old content from DB ---
+    old_memory_id = snapshot["data"].get("memory_id")
+    old_version = await client.get_memory_version(old_memory_id) if old_memory_id else None
+    
+    if old_version:
+        old_content = old_version.get("content", "")
+    else:
+        old_content = "[已被永久删除，无法显示旧内容]"
+    
     snapshot_data = {
-        "content": snapshot["data"].get("content", ""),
+        "content": old_content,
         "importance": snapshot["data"].get("importance"),
         "disclosure": snapshot["data"].get("disclosure")
     }
@@ -251,16 +266,32 @@ async def _diff_path_modify_meta(snapshot: dict, resource_id: str) -> dict:
 # ========== Diff: MEMORY snapshots ==========
 
 async def _diff_memory_content(snapshot: dict, resource_id: str) -> dict:
-    """Diff for memory content change. Rollback = rollback_to_memory."""
+    """Diff for memory content change. Rollback = rollback_to_memory.
+    
+    Old content is fetched from DB via memory_id (the deprecated Memory row
+    is preserved by the version chain).  If the old row was permanently
+    deleted, a fallback message is shown instead.
+    """
+    client = get_sqlite_client()
+    
+    # --- Retrieve old content from DB instead of snapshot file ---
+    old_memory_id = snapshot["data"].get("memory_id")
+    old_version = await client.get_memory_version(old_memory_id) if old_memory_id else None
+    
+    if old_version:
+        old_content = old_version.get("content", "")
+    else:
+        old_content = "[已被永久删除，无法显示旧内容]"
+    
     snapshot_data = {
-        "content": snapshot["data"].get("content", ""),
+        "content": old_content,
         "importance": None,
         "disclosure": None
     }
     
+    # --- Retrieve current content via path (with alias fallback) ---
     current_memory = await _get_memory_by_path_from_data(snapshot["data"])
     
-    # Fallback: if original path was deleted, try alternative paths from snapshot
     if not current_memory:
         for alt_uri_str in snapshot["data"].get("all_paths", []):
             if "://" in alt_uri_str:
@@ -271,7 +302,6 @@ async def _diff_memory_content(snapshot: dict, resource_id: str) -> dict:
             orig_domain = snapshot["data"].get("domain", "core")
             if alt_path == orig_path and alt_domain == orig_domain:
                 continue
-            client = get_sqlite_client()
             current_memory = await client.get_memory_by_path(alt_path, alt_domain)
             if current_memory:
                 break
@@ -388,14 +418,24 @@ async def _rollback_path(data: dict) -> dict:
     
     elif operation_type == "delete":
         # Rollback of delete = restore the path
+        memory_id = data.get("memory_id")
+        
+        # Verify the target memory still exists in DB
+        target_version = await client.get_memory_version(memory_id) if memory_id else None
+        if not target_version:
+            raise HTTPException(
+                status_code=410,
+                detail=f"旧版本 (memory_id={memory_id}) 已被永久删除，无法恢复 '{uri}'。"
+            )
+        
         try:
             await client.restore_path(
                 path=path, domain=domain,
-                memory_id=data.get("memory_id"),
+                memory_id=memory_id,
                 importance=data.get("importance", 0),
                 disclosure=data.get("disclosure")
             )
-            return {"restored": True, "new_version": data.get("memory_id")}
+            return {"restored": True, "new_version": memory_id}
         except ValueError as e:
             raise HTTPException(status_code=409, detail=f"Cannot restore '{uri}': {e}")
     
@@ -426,6 +466,14 @@ async def _rollback_memory_content(data: dict) -> dict:
     
     if not memory_id:
         raise HTTPException(status_code=400, detail="Snapshot missing memory_id")
+    
+    # Verify the target memory still exists in DB (not permanently deleted)
+    target_version = await client.get_memory_version(memory_id)
+    if not target_version:
+        raise HTTPException(
+            status_code=410,
+            detail=f"旧版本 (memory_id={memory_id}) 已被永久删除，无法回滚。"
+        )
     
     current = await client.get_memory_by_path(path, domain)
     
@@ -466,6 +514,14 @@ async def _rollback_legacy_modify(data: dict) -> dict:
     
     if not snapshot_memory_id:
         raise HTTPException(status_code=400, detail="Snapshot missing memory_id")
+    
+    # Verify the target memory still exists in DB
+    target_version = await client.get_memory_version(snapshot_memory_id)
+    if not target_version:
+        raise HTTPException(
+            status_code=410,
+            detail=f"旧版本 (memory_id={snapshot_memory_id}) 已被永久删除，无法回滚。"
+        )
     
     current = await client.get_memory_by_path(path, domain)
     if not current:

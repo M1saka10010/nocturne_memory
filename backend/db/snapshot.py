@@ -163,6 +163,34 @@ class SnapshotManager:
         snapshot_path = self._get_snapshot_path(session_id, resource_id)
         return os.path.exists(snapshot_path)
     
+    def find_memory_snapshot_by_uri(self, session_id: str, uri: str) -> Optional[str]:
+        """
+        Find an existing memory content snapshot for a given URI.
+        
+        When a memory is updated multiple times in one session, each update
+        creates a new memory_id (version chain: id=1 → id=5 → id=12 → ...).
+        The snapshot resource_id is "memory:{id}", so a naive has_snapshot()
+        check on the new id misses the existing snapshot for the old id.
+        
+        This method scans the manifest for any "memory" type snapshot whose
+        stored URI matches the given one, ensuring only ONE content snapshot
+        per URI per session regardless of how many updates occur.
+        
+        Args:
+            session_id: Session identifier
+            uri: The memory URI (e.g. "core://foo/bar")
+            
+        Returns:
+            The resource_id of the existing snapshot (e.g. "memory:1"),
+            or None if no matching snapshot exists.
+        """
+        manifest = self._load_manifest(session_id)
+        for resource_id, meta in manifest.get("resources", {}).items():
+            if (meta.get("resource_type") == "memory"
+                    and meta.get("uri") == uri):
+                return resource_id
+        return None
+    
     def create_snapshot(
         self,
         session_id: str,

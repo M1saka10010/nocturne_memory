@@ -160,13 +160,19 @@ async def _snapshot_memory_content(uri: str) -> bool:
     Snapshot memory content before modification.
     
     Uses memory:{id} as resource_id so it never collides with path snapshots.
-    Idempotent: if the same memory was already snapshotted (even via a different
-    alias URI), the existing snapshot is kept.
+    Idempotent per URI per session: when a memory is updated multiple times,
+    each update produces a new memory_id (version chain), but only the FIRST
+    version is snapshotted.  Subsequent updates to the same URI are no-ops.
+    
+    This prevents orphaned snapshots when create+delete cancel out: without
+    this, create → update(×N) → delete would leave N-2 unreachable
+    "memory:{intermediate_id}" snapshots in the manifest.
     """
     manager = get_snapshot_manager()
     session_id = get_session_id()
     
     domain, path = parse_uri(uri)
+    full_uri = make_uri(domain, path)
     client = get_sqlite_client()
     memory = await client.get_memory_by_path(path, domain)
     
@@ -175,7 +181,13 @@ async def _snapshot_memory_content(uri: str) -> bool:
     
     resource_id = f"memory:{memory['id']}"
     
+    # Fast path: exact match (same memory_id, no version change yet)
     if manager.has_snapshot(session_id, resource_id):
+        return False
+    
+    # Slow path: check if an earlier version of this URI was already
+    # snapshotted (e.g. memory:1 exists but current id is now 5).
+    if manager.find_memory_snapshot_by_uri(session_id, full_uri):
         return False
     
     # Collect all paths pointing to this memory for fallback during rollback.
@@ -190,8 +202,10 @@ async def _snapshot_memory_content(uri: str) -> bool:
         snapshot_data={
             "operation_type": "modify_content",
             "memory_id": memory["id"],
-            "content": memory.get("content"),
-            "uri": make_uri(domain, path),
+            # Content is NOT stored here — the old Memory row is preserved
+            # in DB (deprecated=True, migrated_to=new_id) and can be read
+            # via get_memory_version(memory_id) when computing diffs.
+            "uri": full_uri,
             "domain": domain,
             "path": path,
             "all_paths": all_paths
@@ -290,17 +304,11 @@ async def _snapshot_path_delete(uri: str) -> bool:
         existing_op = existing.get("data", {}).get("operation_type")
         if existing_op in ("create", "create_alias"):
             # create + delete = no-op. Remove path snapshot.
-            # Also clean up any content snapshots from updates between create and delete,
-            # otherwise they become orphaned (path gone → rollback 404).
-            original_memory_id = existing.get("data", {}).get("memory_id")
-            if original_memory_id:
-                manager.delete_snapshot(session_id, f"memory:{original_memory_id}")
-            # If content was updated, path now points to a newer memory version
-            domain_chk, path_chk = parse_uri(uri)
-            client = get_sqlite_client()
-            current_mem = await client.get_memory_by_path(path_chk, domain_chk)
-            if current_mem and current_mem["id"] != original_memory_id:
-                manager.delete_snapshot(session_id, f"memory:{current_mem['id']}")
+            # Also clean up the content snapshot (at most one per URI,
+            # guaranteed by _snapshot_memory_content's URI-level dedup).
+            content_snap_id = manager.find_memory_snapshot_by_uri(session_id, uri)
+            if content_snap_id:
+                manager.delete_snapshot(session_id, content_snap_id)
             manager.delete_snapshot(session_id, uri)
             return False
     
@@ -333,7 +341,8 @@ async def _snapshot_path_delete(uri: str) -> bool:
             "memory_id": memory["id"],
             "importance": importance,
             "disclosure": disclosure,
-            "content": memory.get("content")  # For diff display
+            # Content is NOT stored here — retrievable from DB via memory_id
+            # (the Memory row persists as deprecated until permanently deleted).
         },
         force=True
     )
