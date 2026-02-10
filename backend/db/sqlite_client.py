@@ -804,6 +804,56 @@ class SQLiteClient:
             return matches
     
     # =========================================================================
+    # Recent Memories
+    # =========================================================================
+    
+    async def get_recent_memories(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get the most recently created/updated non-deprecated memories
+        that have at least one path (URI) pointing to them.
+        
+        Since updates create new Memory rows (old ones are deprecated),
+        created_at on non-deprecated rows effectively means "last modified".
+        
+        Args:
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of dicts with uri, importance, disclosure, created_at,
+            ordered by created_at DESC (most recent first).
+        """
+        async with self.session() as session:
+            # Subquery: find non-deprecated memory IDs that have paths
+            # Group by memory_id to avoid duplicates when a memory has multiple paths
+            result = await session.execute(
+                select(Memory, Path)
+                .join(Path, Memory.id == Path.memory_id)
+                .where(Memory.deprecated == False)
+                .order_by(Memory.created_at.desc())
+            )
+            
+            seen_memory_ids = set()
+            memories = []
+            
+            for memory, path_obj in result.all():
+                if memory.id in seen_memory_ids:
+                    continue
+                seen_memory_ids.add(memory.id)
+                
+                memories.append({
+                    "memory_id": memory.id,
+                    "uri": f"{path_obj.domain}://{path_obj.path}",
+                    "importance": path_obj.importance,
+                    "disclosure": path_obj.disclosure,
+                    "created_at": memory.created_at.isoformat() if memory.created_at else None,
+                })
+                
+                if len(memories) >= limit:
+                    break
+            
+            return memories
+    
+    # =========================================================================
     # Deprecated Memory Operations (for Salem's review)
     # =========================================================================
     

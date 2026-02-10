@@ -465,6 +465,7 @@ async def _generate_boot_memory_view() -> str:
         output_parts.append("## Contents:")
         output_parts.append("")
         output_parts.append("For full memory index, use: system://index")
+        output_parts.append("For recent memories, use: system://recent")
         output_parts.extend(results)
     else:
         output_parts.append("(No core memories loaded. Run migration first.)")
@@ -524,6 +525,58 @@ async def _generate_memory_index_view() -> str:
         return f"Error generating index: {str(e)}"
 
 
+async def _generate_recent_memories_view(limit: int = 10) -> str:
+    """
+    Internal helper to generate a view of recently modified memories.
+    
+    Queries non-deprecated memories ordered by created_at DESC,
+    only including those that have at least one URI in the paths table.
+    
+    Args:
+        limit: Maximum number of results to return
+    """
+    client = get_sqlite_client()
+    
+    try:
+        results = await client.get_recent_memories(limit=limit)
+        
+        lines = []
+        lines.append("# Recently Modified Memories")
+        lines.append(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"# Showing: {len(results)} most recent entries (requested: {limit})")
+        lines.append("")
+        
+        if not results:
+            lines.append("(No memories found.)")
+            return "\n".join(lines)
+        
+        for i, item in enumerate(results, 1):
+            uri = item["uri"]
+            importance = item.get("importance", 0)
+            disclosure = item.get("disclosure")
+            raw_ts = item.get("created_at", "")
+            
+            # Truncate timestamp to minute precision: "2026-02-09T20:40"
+            if raw_ts and len(raw_ts) >= 16:
+                modified = raw_ts[:10] + " " + raw_ts[11:16]
+            else:
+                modified = raw_ts or "unknown"
+            
+            imp_str = f"★{importance}"
+            
+            lines.append(f"{i}. {uri}  [{imp_str}]  modified: {modified}")
+            if disclosure:
+                lines.append(f"   disclosure: {disclosure}")
+            else:
+                lines.append("   disclosure: (NOT SET — consider adding one)")
+            lines.append("")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        return f"Error generating recent memories view: {str(e)}"
+
+
 # =============================================================================
 # MCP Tools
 # =============================================================================
@@ -538,6 +591,8 @@ async def read_memory(uri: str) -> str:
     Special System URIs:
     - system://boot   : [Startup Only] Loads Nocturne's core memories.
     - system://index  : Loads a full index of all available memories.
+    - system://recent : Shows recently modified memories (default: 10).
+    - system://recent/N : Shows the N most recently modified memories (e.g. system://recent/20).
     
     Note: Same Memory ID = same content (alias). Different ID + similar content = redundant content.
     
@@ -559,6 +614,18 @@ async def read_memory(uri: str) -> str:
     
     if uri.strip() == "system://index":
         return await _generate_memory_index_view()
+    
+    # system://recent or system://recent/N
+    stripped = uri.strip()
+    if stripped == "system://recent" or stripped.startswith("system://recent/"):
+        limit = 10  # default
+        suffix = stripped[len("system://recent"):].strip("/")
+        if suffix:
+            try:
+                limit = max(1, min(100, int(suffix)))
+            except ValueError:
+                return f"Error: Invalid number in URI '{uri}'. Usage: system://recent or system://recent/N (e.g. system://recent/20)"
+        return await _generate_recent_memories_view(limit=limit)
 
     client = get_sqlite_client()
     
