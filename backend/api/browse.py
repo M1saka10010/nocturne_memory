@@ -8,12 +8,16 @@ hierarchical browser. Every path is just a node with content and children.
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from db import get_sqlite_client
+from db.sqlite_client import Path as PathModel
+from sqlalchemy import select
 
 router = APIRouter(prefix="/browse", tags=["browse"])
 
 
 class NodeUpdate(BaseModel):
-    content: str
+    content: str | None = None
+    importance: int | None = None
+    disclosure: str | None = None
 
 
 @router.get("/node")
@@ -65,11 +69,26 @@ async def get_node(
             "path": c["path"],
             "name": c["path"].split("/")[-1],  # Last segment
             "importance": c["importance"],
+            "disclosure": c.get("disclosure"),
             "content_snippet": c["content_snippet"]
         }
         for c in children_raw
     ]
     children.sort(key=lambda x: (x["importance"] if x["importance"] is not None else 999, x["path"]))
+    
+    # Get all aliases (other paths pointing to the same memory)
+    aliases = []
+    if path and memory.get("id"):
+        async with client.session() as session:
+            result = await session.execute(
+                select(PathModel.domain, PathModel.path)
+                .where(PathModel.memory_id == memory["id"])
+            )
+            aliases = [
+                f"{row[0]}://{row[1]}"
+                for row in result.all()
+                if not (row[0] == domain and row[1] == path)  # exclude current
+            ]
     
     return {
         "node": {
@@ -80,7 +99,8 @@ async def get_node(
             "content": memory["content"],
             "importance": memory["importance"],
             "disclosure": memory["disclosure"],
-            "created_at": memory["created_at"]
+            "created_at": memory["created_at"],
+            "aliases": aliases
         },
         "children": children,
         "breadcrumbs": breadcrumbs
@@ -103,11 +123,13 @@ async def update_node(
     if not memory:
         raise HTTPException(status_code=404, detail=f"Path not found: {domain}://{path}")
     
-    # Update (creates new version, deprecates old)
+    # Update (creates new version if content changed, updates path metadata otherwise)
     result = await client.update_memory(
         path=path,
         domain=domain,
         content=body.content,
+        importance=body.importance,
+        disclosure=body.disclosure,
     )
     
     return {"success": True, "memory_id": result["new_memory_id"]}

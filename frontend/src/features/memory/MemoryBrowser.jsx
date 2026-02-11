@@ -13,13 +13,40 @@ import {
   Cpu, 
   Hash, 
   Layers, 
-  ArrowLeft
+  ArrowLeft,
+  AlertTriangle,
+  Link2,
+  Star
 } from 'lucide-react';
 import axios from 'axios';
 import clsx from 'clsx';
 
 // API Instance
 const api = axios.create({ baseURL: '/api' });
+
+// --- Helper ---
+const ImportanceBadge = ({ importance, size = 'sm' }) => {
+  if (importance === null || importance === undefined) return null;
+  
+  const colors = importance === 0
+    ? 'bg-rose-950/40 text-rose-400 border-rose-800/40'
+    : importance <= 2
+    ? 'bg-amber-950/30 text-amber-400 border-amber-800/30'
+    : importance <= 5
+    ? 'bg-sky-950/30 text-sky-400 border-sky-800/30'
+    : 'bg-slate-800/30 text-slate-500 border-slate-700/30';
+  
+  const sizeClass = size === 'lg' 
+    ? 'px-2.5 py-1 text-xs gap-1.5' 
+    : 'px-1.5 py-0.5 text-[10px] gap-1';
+  
+  return (
+    <span className={clsx("inline-flex items-center rounded border font-mono font-semibold", colors, sizeClass)}>
+      <Star size={size === 'lg' ? 12 : 9} />
+      {importance}
+    </span>
+  );
+};
 
 // --- Components ---
 
@@ -71,7 +98,7 @@ const Breadcrumb = ({ items, onNavigate }) => (
   </div>
 );
 
-// 3. Node Card (Grid View)
+// 3. Node Card (Grid View) - Redesigned
 const NodeGridCard = ({ node, onClick }) => (
   <button 
     onClick={onClick}
@@ -80,24 +107,33 @@ const NodeGridCard = ({ node, onClick }) => (
     {/* Hover Gradient */}
     <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
     
+    {/* Header: Icon + Name + Importance */}
     <div className="flex items-center gap-3 mb-3 w-full">
-      <div className="p-2 rounded-lg bg-slate-900 group-hover:bg-indigo-900/20 text-slate-500 group-hover:text-indigo-400 transition-colors">
-         {/* Simple heuristic for icon */}
+      <div className="p-2 rounded-lg bg-slate-900 group-hover:bg-indigo-900/20 text-slate-500 group-hover:text-indigo-400 transition-colors flex-shrink-0">
          {node.children_count > 0 ? <Folder size={18} /> : <FileText size={18} />}
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="text-sm font-semibold text-slate-300 group-hover:text-indigo-200 transition-colors break-words line-clamp-3">
+        <h3 className="text-sm font-semibold text-slate-300 group-hover:text-indigo-200 transition-colors break-words line-clamp-2">
           {node.name || node.path.split('/').pop()}
         </h3>
-        <p className="text-[10px] text-slate-600 font-mono truncate opacity-70 group-hover:opacity-100">
-           /{node.path.split('/').pop()}
-        </p>
       </div>
+      <ImportanceBadge importance={node.importance} />
     </div>
     
+    {/* Disclosure (if present) */}
+    {node.disclosure && (
+      <div className="w-full mb-2">
+        <p className="text-[11px] text-amber-500/70 leading-snug line-clamp-2 flex items-start gap-1">
+          <AlertTriangle size={11} className="flex-shrink-0 mt-0.5" />
+          <span className="italic">{node.disclosure}</span>
+        </p>
+      </div>
+    )}
+    
+    {/* Content snippet */}
     <div className="w-full flex-1">
         {node.content_snippet ? (
-            <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">
+            <p className="text-xs text-slate-500 leading-relaxed line-clamp-3">
                 {node.content_snippet}
             </p>
         ) : (
@@ -105,12 +141,8 @@ const NodeGridCard = ({ node, onClick }) => (
         )}
     </div>
 
-    <div className="w-full mt-4 flex items-center justify-between border-t border-slate-800/50 pt-3 opacity-60 group-hover:opacity-100 transition-opacity">
-        <span className="text-[10px] text-slate-600 uppercase tracking-wider font-bold">
-            {node.type || 'Node'}
-        </span>
-        <ChevronRight size={12} className="text-indigo-500/50" />
-    </div>
+    {/* Hover arrow - absolute positioned, no layout cost */}
+    <ChevronRight size={14} className="absolute bottom-4 right-4 text-indigo-500/50 opacity-0 group-hover:opacity-100 transition-opacity" />
   </button>
 );
 
@@ -129,6 +161,8 @@ export default function MemoryBrowser() {
   // Edit State
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
+  const [editDisclosure, setEditDisclosure] = useState('');
+  const [editImportance, setEditImportance] = useState(0);
   const [saving, setSaving] = useState(false);
 
   // Fetch Data
@@ -141,6 +175,8 @@ export default function MemoryBrowser() {
         const res = await api.get('/browse/node', { params: { domain, path } });
         setData(res.data);
         setEditContent(res.data.node?.content || '');
+        setEditDisclosure(res.data.node?.disclosure || '');
+        setEditImportance(res.data.node?.importance ?? 0);
       } catch (err) {
         setError(err.response?.data?.detail || err.message);
       } finally {
@@ -157,13 +193,42 @@ export default function MemoryBrowser() {
     setSearchParams(params);
   };
 
+  const startEditing = () => {
+    setEditContent(data.node?.content || '');
+    setEditDisclosure(data.node?.disclosure || '');
+    setEditImportance(data.node?.importance ?? 0);
+    setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setEditing(false);
+    setEditContent(data.node?.content || '');
+    setEditDisclosure(data.node?.disclosure || '');
+    setEditImportance(data.node?.importance ?? 0);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.put('/browse/node', 
-        { content: editContent },
-        { params: { domain, path } }
-      );
+      const payload = {};
+      // Only send changed fields
+      if (editContent !== (data.node?.content || '')) {
+        payload.content = editContent;
+      }
+      if (editImportance !== (data.node?.importance ?? 0)) {
+        payload.importance = editImportance;
+      }
+      if (editDisclosure !== (data.node?.disclosure || '')) {
+        payload.disclosure = editDisclosure;
+      }
+      
+      if (Object.keys(payload).length === 0) {
+        // Nothing changed
+        setEditing(false);
+        return;
+      }
+      
+      await api.put('/browse/node', payload, { params: { domain, path } });
       const res = await api.get('/browse/node', { params: { domain, path } });
       setData(res.data);
       setEditing(false);
@@ -175,6 +240,7 @@ export default function MemoryBrowser() {
   };
 
   const isRoot = !path;
+  const node = data.node;
 
   return (
     <div className="flex h-full bg-[#05050A] text-slate-300 font-sans selection:bg-indigo-500/30 selection:text-indigo-200 overflow-hidden">
@@ -190,7 +256,6 @@ export default function MemoryBrowser() {
         </div>
         
         <div className="p-3">
-             {/* Fake 'Quick Access' for now, could be dynamic later */}
              <div className="mb-4">
                  <h3 className="px-3 text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">Domains</h3>
                  <SidebarItem 
@@ -222,7 +287,6 @@ export default function MemoryBrowser() {
              <Breadcrumb items={data.breadcrumbs} onNavigate={navigateTo} />
              
              <div className="flex items-center gap-2">
-                 {/* Search Placeholder */}
                  <div className="relative group">
                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 group-hover:text-slate-400 transition-colors" />
                      <input 
@@ -252,36 +316,96 @@ export default function MemoryBrowser() {
                 <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                     
                     {/* Node Header & Content (If not root) */}
-                    {!isRoot && data.node && (
+                    {!isRoot && node && (
                         <div className="space-y-4">
                              {/* Header */}
                             <div className="flex items-start justify-between gap-4">
-                                <div>
-                                    <h1 className="text-2xl font-bold text-slate-100 tracking-tight mb-2">
-                                        {data.node.name || path.split('/').pop()}
-                                    </h1>
-                                    {data.node.disclosure && (
-                                        <div className="inline-flex items-center gap-2 px-2 py-1 bg-amber-950/20 border border-amber-900/30 rounded text-amber-500/80 text-xs">
-                                            <span>⚠ Disclosure:</span>
-                                            <span className="italic">{data.node.disclosure}</span>
+                                <div className="space-y-3 min-w-0 flex-1">
+                                    {/* Title + Importance */}
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                        <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
+                                            {node.name || path.split('/').pop()}
+                                        </h1>
+                                        <ImportanceBadge importance={node.importance} size="lg" />
+                                    </div>
+                                    
+                                    {/* Disclosure */}
+                                    {node.disclosure && !editing && (
+                                        <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-950/20 border border-amber-900/30 rounded-lg text-amber-500/80 text-xs max-w-full">
+                                            <AlertTriangle size={14} className="flex-shrink-0" />
+                                            <span className="font-medium mr-1">Disclosure:</span>
+                                            <span className="italic truncate">{node.disclosure}</span>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Aliases */}
+                                    {node.aliases && node.aliases.length > 0 && !editing && (
+                                        <div className="flex items-start gap-2 text-xs text-slate-500">
+                                            <Link2 size={13} className="flex-shrink-0 mt-0.5 text-slate-600" />
+                                            <div className="flex flex-wrap gap-1.5">
+                                                <span className="text-slate-600 font-medium">Also reachable via:</span>
+                                                {node.aliases.map(alias => (
+                                                    <code key={alias} className="px-1.5 py-0.5 bg-slate-800/60 rounded text-indigo-400/70 font-mono text-[11px]">
+                                                        {alias}
+                                                    </code>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex gap-2">
+                                
+                                {/* Edit / Save buttons */}
+                                <div className="flex gap-2 flex-shrink-0">
                                     {editing ? (
                                         <>
-                                            <button onClick={() => { setEditing(false); setEditContent(data.node.content); }} className="p-2 hover:bg-slate-800 rounded text-slate-400 transition-colors"><X size={18} /></button>
+                                            <button onClick={cancelEditing} className="p-2 hover:bg-slate-800 rounded text-slate-400 transition-colors"><X size={18} /></button>
                                             <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-medium transition-colors shadow-lg shadow-indigo-900/20">
                                                 <Save size={16} /> {saving ? 'Saving...' : 'Save Changes'}
                                             </button>
                                         </>
                                     ) : (
-                                        <button onClick={() => setEditing(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600">
+                                        <button onClick={startEditing} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600">
                                             <Edit3 size={16} /> Edit
                                         </button>
                                     )}
                                 </div>
                             </div>
+
+                            {/* Metadata Editor (shown in edit mode) */}
+                            {editing && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-slate-900/50 border border-slate-800/50 rounded-xl">
+                                    {/* Importance */}
+                                    <div className="space-y-1.5">
+                                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                                            <Star size={12} />
+                                            Importance
+                                            <span className="text-slate-600 font-normal">(lower = more important)</span>
+                                        </label>
+                                        <input 
+                                            type="number"
+                                            min="0"
+                                            value={editImportance}
+                                            onChange={e => setEditImportance(parseInt(e.target.value) || 0)}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-indigo-500/50 transition-colors"
+                                        />
+                                    </div>
+                                    {/* Disclosure */}
+                                    <div className="space-y-1.5">
+                                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                                            <AlertTriangle size={12} />
+                                            Disclosure
+                                            <span className="text-slate-600 font-normal">(when to recall)</span>
+                                        </label>
+                                        <input 
+                                            type="text"
+                                            value={editDisclosure}
+                                            onChange={e => setEditDisclosure(e.target.value)}
+                                            placeholder="e.g. When I need to remember..."
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 transition-colors"
+                                        />
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Content Editor / Viewer */}
                             <div className={clsx(
@@ -297,7 +421,7 @@ export default function MemoryBrowser() {
                                     />
                                 ) : (
                                     <div className="p-6 md:p-8 prose prose-invert prose-sm max-w-none">
-                                        <pre className="whitespace-pre-wrap font-serif text-slate-300 leading-7">{data.node.content}</pre>
+                                        <pre className="whitespace-pre-wrap font-serif text-slate-300 leading-7">{node.content}</pre>
                                     </div>
                                 )}
                             </div>
@@ -328,7 +452,7 @@ export default function MemoryBrowser() {
                     )}
                     
                     {/* Empty State for Children */}
-                    {!loading && !data.children?.length && !data.node && (
+                    {!loading && !data.children?.length && !node && (
                         <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-4">
                             <Folder size={48} className="opacity-20" />
                             <p className="text-sm">Empty Sector</p>
