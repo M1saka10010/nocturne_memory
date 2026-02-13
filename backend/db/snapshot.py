@@ -1,8 +1,8 @@
 """
 Snapshot Manager for Selective Rollback
 
-This module implements a snapshot system that allows Salem to review and
-selectively roll back Nocturne's database operations.
+This module implements a snapshot system that allows the human to review and
+selectively roll back the AI's database operations.
 
 Design Principles:
 1. Snapshots are taken BEFORE the first modification to a resource in a session

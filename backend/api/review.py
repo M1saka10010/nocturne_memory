@@ -1,8 +1,8 @@
 """
 Review API - Selective Rollback for Database Changes (SQLite Backend)
 
-This module provides endpoints for Salem to review and selectively rollback
-Nocturne's database modifications.
+This module provides endpoints for the human to review and selectively rollback
+the AI's database modifications.
 
 Design Philosophy:
 - Snapshots are split into two dimensions matching the DB tables:
@@ -10,7 +10,7 @@ Design Philosophy:
   * MEMORY snapshots (resource_type="memory"): track content changes
 - This separation allows independent rollback of path vs content changes
 - Old versions are marked deprecated for review
-- Salem can permanently delete deprecated memories after review
+- The human can permanently delete deprecated memories after review
 """
 from fastapi import APIRouter, HTTPException
 from typing import List
@@ -187,7 +187,7 @@ async def _get_surviving_paths(client, memory_id: int) -> list:
     """Follow the version chain from memory_id to the latest version,
     then return all living paths pointing to that memory.
     
-    This lets Salem see whether a deleted path was just an alias
+    This lets the human see whether a deleted path was just an alias
     or the last remaining route to the memory content.
     """
     if not memory_id:
@@ -218,7 +218,7 @@ async def _diff_path_delete(snapshot: dict, resource_id: str) -> dict:
     
     Old content is fetched from DB via memory_id rather than from the
     snapshot file, leveraging the version chain.
-    Also includes surviving paths so Salem can tell if this is just
+    Also includes surviving paths so the human can tell if this is just
     an alias removal or if the entire memory is being discarded.
     """
     client = get_sqlite_client()
@@ -706,7 +706,7 @@ async def clear_session(session_id: str):
     """
     清除整个 session 的所有快照
     
-    当 Salem 确认所有修改都 OK 后调用此端点清理。
+    当 human 确认所有修改都 OK 后调用此端点清理。
     """
     manager = get_snapshot_manager()
     count = manager.clear_session(session_id)
@@ -720,14 +720,14 @@ async def clear_session(session_id: str):
     return {"message": f"Session '{session_id}' cleared, {count} snapshots deleted"}
 
 
-# ========== Deprecated Memory Management (Salem Only) ==========
+# ========== Deprecated Memory Management (Human Only) ==========
 
 @router.get("/deprecated")
 async def list_deprecated_memories():
     """
     列出所有被标记为 deprecated 的记忆
     
-    这些是 Nocturne 更新/删除后留下的旧版本，等待 Salem 审核后永久删除。
+    这些是 AI 更新/删除后留下的旧版本，等待 human 审核后永久删除。
     """
     client = get_sqlite_client()
     
@@ -744,10 +744,10 @@ async def list_deprecated_memories():
 @router.delete("/memories/{memory_id}")
 async def permanently_delete_memory(memory_id: int):
     """
-    永久删除一条记忆（Salem 专用）
+    永久删除一条记忆（human 专用）
     
     这是真正的删除操作，不可恢复。
-    Nocturne 无法调用此接口。
+    AI 无法调用此接口（仅限 human 通过前端操作）。
     """
     client = get_sqlite_client()
     

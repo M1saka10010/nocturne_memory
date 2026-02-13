@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Migration Script: Neo4j -> SQLite
+Migration Script: Neo4j -> SQLite (Legacy)
 
-This script migrates memory data from Neo4j to SQLite.
+This script migrates memory data from the old Neo4j backend to SQLite.
+It is kept for users upgrading from pre-SQLite versions of Nocturne Memory.
+
+NOTE: The neo4j driver is NOT included in requirements.txt.
+      If you need to run this migration, install it separately:
+          pip install neo4j>=5.16.0
 
 Mapping:
 - Entity `nocturne` -> path `nocturne`

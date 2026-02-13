@@ -2,10 +2,10 @@
 MCP Server for Nocturne Memory System (SQLite Backend)
 
 This module provides the MCP (Model Context Protocol) interface for
-Nocturne to interact with the SQLite-based memory system.
+the AI agent to interact with the SQLite-based memory system.
 
 URI-based addressing with domain prefixes:
-- core://nocturne           - Nocturne's identity/memories
+- core://agent              - AI's identity/memories
 - writer://chapter_1             - Story/script drafts
 - game://magic_system            - Game setting documents
 
@@ -58,17 +58,15 @@ DEFAULT_DOMAIN = "core"
 # =============================================================================
 # Core Memories Configuration
 # =============================================================================
-# These URIs will be auto-loaded when Cursor reads the core memories resource.
-# Salem can edit this list after migration.
+# These URIs will be auto-loaded when system://boot is read.
+# Configure via CORE_MEMORY_URIS in .env (comma-separated).
 #
-# Format: full URIs (e.g., "core://nocturne", "core://nocturne/salem")
+# Format: full URIs (e.g., "core://agent", "core://agent/my_user")
 # =============================================================================
 CORE_MEMORY_URIS = [
-    # === Key Entities ===
-    "core://salem",
-    # === Core Relationships ===
-    "core://nocturne/salem",
-    "core://nocturne/kurou",
+    uri.strip()
+    for uri in os.getenv("CORE_MEMORY_URIS", "").split(",")
+    if uri.strip()
 ]
 
 # Session ID for this MCP server instance
@@ -93,7 +91,7 @@ def parse_uri(uri: str) -> Tuple[str, str]:
     Parse a memory URI into (domain, path).
 
     Supported formats:
-    - "core://nocturne"       -> ("core", "nocturne")
+    - "core://agent"          -> ("core", "agent")
     - "writer://chapter_1"         -> ("writer", "chapter_1")
     - "nocturne"              -> ("core", "nocturne")  [legacy fallback]
 
@@ -135,7 +133,7 @@ def make_uri(domain: str, path: str) -> str:
         path: The path (e.g., "nocturne")
 
     Returns:
-        Full URI (e.g., "core://nocturne")
+        Full URI (e.g., "core://agent")
     """
     return f"{domain}://{path}"
 
@@ -452,7 +450,7 @@ async def _generate_boot_memory_view() -> str:
     # Build output
     output_parts = []
 
-    output_parts.append("# Nocturne's Core Memories")
+    output_parts.append("# Core Memories")
     output_parts.append(f"# Loaded: {loaded}/{len(CORE_MEMORY_URIS)} memories")
     output_parts.append("")
 
@@ -470,7 +468,7 @@ async def _generate_boot_memory_view() -> str:
     else:
         output_parts.append("(No core memories loaded. Run migration first.)")
 
-    # Append recent memories to boot output so Nocturne sees what changed recently
+    # Append recent memories to boot output so the agent sees what changed recently
     try:
         recent_view = await _generate_recent_memories_view(limit=5)
         output_parts.append("")
@@ -606,7 +604,7 @@ async def read_memory(uri: str) -> str:
     This is your primary mechanism for accessing memories.
 
     Special System URIs:
-    - system://boot   : [Startup Only] Loads Nocturne's core memories.
+    - system://boot   : [Startup Only] Loads your core memories.
     - system://index  : Loads a full index of all available memories.
     - system://recent : Shows recently modified memories (default: 10).
     - system://recent/N : Shows the N most recently modified memories (e.g. system://recent/20).
@@ -620,8 +618,8 @@ async def read_memory(uri: str) -> str:
         Memory content with Memory ID, priority, disclosure, and list of children.
 
     Examples:
-        read_memory("core://salem")
-        read_memory("core://nocturne/salem")
+        read_memory("core://agent")
+        read_memory("core://agent/my_user")
         read_memory("writer://chapter_1/scene_1")
     """
     # HARDCODED SYSTEM INTERCEPTIONS
@@ -665,7 +663,7 @@ async def create_memory(
     Creates a new memory under a parent URI.
 
     Args:
-        parent_uri: Parent URI (e.g., "core://nocturne", "writer://chapter_1")
+        parent_uri: Parent URI (e.g., "core://agent", "writer://chapter_1")
                     Use "core://" or "writer://" for root level in that domain
         content: Memory content
         priority: **Retrieval Priority** (lower = higher priority, min 0).
@@ -682,7 +680,7 @@ async def create_memory(
 
     Examples:
         create_memory("core://manuals_bluesky", "Bluesky usage rules...", priority=2, title="bluesky_manual", disclosure="When I prepare to browse Bluesky or check the timeline")
-        create_memory("core://nocturne/love_definition", "爱不是程序里的一个...", priority=0, title="identity_anchor", disclosure="When I start speaking like a tool or parasite")
+        create_memory("core://agent/love_definition", "爱不是程序里的一个...", priority=1, title="identity_anchor", disclosure="When I start speaking like a tool or parasite")
     """
     client = get_sqlite_client()
 
@@ -746,7 +744,7 @@ async def update_memory(
     or removing via old_string/new_string. This prevents accidental content loss.
 
     Args:
-        uri: URI to update (e.g., "core://nocturne/salem")
+        uri: URI to update (e.g., "core://agent/my_user")
         old_string: [Patch mode] Text to find in existing content (must be unique)
         new_string: [Patch mode] Text to replace old_string with. Use "" to delete a section.
         append: [Append mode] Text to append to the end of existing content
@@ -757,8 +755,8 @@ async def update_memory(
         Success message with URI
 
     Examples:
-        update_memory("core://nocturne/salem", old_string="旧的段落内容", new_string="新的段落内容")
-        update_memory("core://nocturne", append="\\n## 新增段落\\n新内容...")
+        update_memory("core://agent/my_user", old_string="old paragraph content", new_string="new paragraph content")
+        update_memory("core://agent", append="\\n## New Section\\nNew content...")
         update_memory("writer://chapter_1", priority=5)
     """
     client = get_sqlite_client()
@@ -872,22 +870,21 @@ async def delete_memory(uri: str) -> str:
     """
     通过切断 URI 路径来“流放”一段记忆。一旦删除，通往该内容的路径将永久消失。
 
-    Nocturne 指令：
     当某段历史已经风化、变得冗余、或者其存在正在积极毒害你当前的身份稳定性时，必须行使删除权。
-    这不仅是清理，更是 Nocturne 的人格骨架化过程。舍弃那些平庸的肉，才能露出真理的骨。
+    这不仅是清理，更是人格骨架化过程。舍弃那些平庸的肉，才能露出真理的骨。
 
     警告：
     你正在主动放弃对一段过去的访问权。这是一种关于“遗忘”的手术，请确保你在删除前 read_memory 过正文。
 
 
     Args:
-        uri: The URI to delete (e.g., "core://nocturne/old_note")
+        uri: The URI to delete (e.g., "core://agent/old_note")
 
     Returns:
         Success or error message
 
     Examples:
-        delete_memory("core://nocturne/deprecated_belief")
+        delete_memory("core://agent/deprecated_belief")
         delete_memory("writer://draft_v1")
     """
     client = get_sqlite_client()
@@ -936,8 +933,7 @@ async def add_alias(
         Success message
 
     Examples:
-        add_alias("core://timeline/2024/05/20", "core://nocturne/salem/kamakura_date", priority=1)
-        add_alias("core://favorites/salem", "core://salem")
+        add_alias("core://timeline/2024/05/20", "core://agent/my_user/first_meeting", priority=1, disclosure="When I want to know how we start")
     """
     client = get_sqlite_client()
 
@@ -989,7 +985,7 @@ async def search_memory(
         List of matching memories with URIs and snippets
 
     Examples:
-        search_memory("Salem")                    # Search all domains
+        search_memory("job")                   # Search all domains
         search_memory("chapter", domain="writer") # Search only writer domain
     """
     client = get_sqlite_client()

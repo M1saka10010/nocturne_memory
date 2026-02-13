@@ -12,7 +12,7 @@ async def get_orphans():
     - deprecated: old versions created by update_memory (has migrated_to)
     - orphaned: non-deprecated memories with no paths pointing to them
     
-    Includes migration target paths for deprecated memories so Salem can see
+    Includes migration target paths for deprecated memories so the human can see
     where the memory used to live without clicking into each one.
     """
     client = get_sqlite_client()

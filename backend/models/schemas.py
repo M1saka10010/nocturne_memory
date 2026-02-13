@@ -56,7 +56,7 @@ class ResourceDiff(BaseModel):
 class RollbackRequest(BaseModel):
     """回滚请求"""
     task_description: Optional[str] = Field(
-        "Rollback to snapshot by Salem",
+        "Rollback to snapshot by human",
         description="任务描述（记录在版本历史中）"
     )
 

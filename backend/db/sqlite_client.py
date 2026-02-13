@@ -920,7 +920,7 @@ class SQLiteClient:
             return memories
 
     # =========================================================================
-    # Deprecated Memory Operations (for Salem's review)
+    # Deprecated Memory Operations (for human's review)
     # =========================================================================
 
     async def get_memory_version(self, memory_id: int) -> Optional[Dict[str, Any]]:
@@ -960,7 +960,7 @@ class SQLiteClient:
 
     async def get_deprecated_memories(self) -> List[Dict[str, Any]]:
         """
-        Get all deprecated memories for Salem's review.
+        Get all deprecated memories for human's review.
 
         Returns:
             List of deprecated memories
@@ -1165,7 +1165,7 @@ class SQLiteClient:
         self, memory_id: int, *, require_orphan: bool = False
     ) -> Dict[str, Any]:
         """
-        Permanently delete a memory (Salem only).
+        Permanently delete a memory (human only).
 
         Before deletion, repairs the version chain: if any other memory
         has migrated_to pointing to this one, it will be updated to skip
