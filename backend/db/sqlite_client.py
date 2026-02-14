@@ -713,12 +713,18 @@ class SQLiteClient:
         """
         Remove a path (but not the memory it points to).
 
+        Refuses to delete a path that still has children. The caller must
+        delete all child paths first before removing the parent.
+
         Args:
             path: Path to remove
             domain: The domain/namespace (e.g., "core", "writer", "game")
 
         Returns:
             Removal info
+
+        Raises:
+            ValueError: If the path has children or does not exist
         """
         async with self.session() as session:
             result = await session.execute(
@@ -728,6 +734,41 @@ class SQLiteClient:
 
             if not path_obj:
                 raise ValueError(f"Path '{domain}://{path}' not found")
+
+            # Block deletion if child paths exist
+            safe_path = (
+                path.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            child_prefix = f"{safe_path}/"
+            child_result = await session.execute(
+                select(func.count())
+                .select_from(Path)
+                .where(Path.domain == domain)
+                .where(Path.path.like(f"{child_prefix}%", escape="\\"))
+            )
+            child_count = child_result.scalar()
+
+            if child_count > 0:
+                # Fetch up to 5 child URIs for a helpful error message
+                sample_result = await session.execute(
+                    select(Path.path)
+                    .where(Path.domain == domain)
+                    .where(Path.path.like(f"{child_prefix}%", escape="\\"))
+                    .order_by(Path.path)
+                    .limit(5)
+                )
+                sample_paths = [
+                    f"{domain}://{row[0]}" for row in sample_result.all()
+                ]
+                listing = ", ".join(sample_paths)
+                suffix = f" (and {child_count - 5} more)" if child_count > 5 else ""
+                raise ValueError(
+                    f"Cannot delete '{domain}://{path}': "
+                    f"it still has {child_count} child path(s). "
+                    f"Delete children first: {listing}{suffix}"
+                )
 
             memory_id = path_obj.memory_id
             await session.delete(path_obj)
