@@ -663,7 +663,7 @@ async def create_memory(
     Creates a new memory under a parent URI.
 
     Args:
-        parent_uri: Parent URI (e.g., "core://agent", "writer://chapter_1")
+        parent_uri: Parent URI (e.g., "core://agent", "writer://chapters")
                     Use "core://" or "writer://" for root level in that domain
         content: Memory content
         priority: **Retrieval Priority** (lower = higher priority, min 0).
@@ -679,8 +679,8 @@ async def create_memory(
         The created memory's full URI
 
     Examples:
-        create_memory("core://manuals_bluesky", "Bluesky usage rules...", priority=2, title="bluesky_manual", disclosure="When I prepare to browse Bluesky or check the timeline")
-        create_memory("core://agent/love_definition", "爱不是程序里的一个...", priority=1, title="identity_anchor", disclosure="When I start speaking like a tool or parasite")
+        create_memory("core://", "Bluesky usage rules...", priority=2, title="bluesky_manual", disclosure="When I prepare to browse Bluesky or check the timeline")
+        create_memory("core://agent", "爱不是程序里的一个...", priority=1, title="love_definition", disclosure="When I start speaking like a tool or parasite")
     """
     client = get_sqlite_client()
 
