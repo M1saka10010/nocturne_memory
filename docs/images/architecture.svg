@@ -1,92 +1,99 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" style="font-family: 'Segoe UI', Roboto, sans-serif; background-color: #0d1117;">
-  <!-- Background Grid -->
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#21262d" stroke-width="1"/>
-    </pattern>
-    <marker id="arrowhead-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#58a6ff" />
+    <!-- Background Gradient -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Box Filters for Glow -->
+    <filter id="glow-ai" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <marker id="arrow-ai" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#60a5fa" />
     </marker>
-    <marker id="arrowhead-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#d2a8ff" />
+
+    <marker id="arrow-human" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f472b6" />
     </marker>
   </defs>
-  <rect width="800" height="400" fill="url(#grid)" />
 
-  <!-- Main Container Title -->
-  <text x="400" y="40" text-anchor="middle" fill="#58a6ff" font-size="20" font-weight="bold" letter-spacing="2">NOCTURNE MEMORY SYSTEM</text>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="url(#bg-grad)" rx="10" />
 
-  <!-- ======================== CENTER: BACKEND CORE ======================== -->
-  <g transform="translate(300, 100)">
-    <!-- Glow effect -->
-    <rect width="200" height="220" rx="10" fill="none" stroke="#238636" stroke-width="2" filter="drop-shadow(0 0 8px #238636)" />
-    <rect width="200" height="220" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" />
-    <!-- Header Strip -->
-    <path d="M0 10 Q0 0 10 0 L190 0 Q200 0 200 10 L200 40 L0 40 Z" fill="#238636" stroke="#30363d" />
+  <!-- === CENTRAL CORE === -->
+  <g transform="translate(350, 160)">
+    <!-- Database Cylinder -->
+    <path d="M 0 30 C 0 10 100 10 100 30 V 110 C 100 130 0 130 0 110 V 30" fill="#334155" stroke="#94a3b8" stroke-width="2"/>
+    <ellipse cx="50" cy="30" rx="50" ry="20" fill="#475569" stroke="#94a3b8" stroke-width="2"/>
     
-    <text x="100" y="30" text-anchor="middle" fill="#ffffff" font-weight="bold">Backend Core</text>
-    
-    <text x="20" y="80" fill="#c9d1d9" font-size="14">⚡ FastAPI (REST)</text>
-    <text x="20" y="110" fill="#c9d1d9" font-size="14">📦 Neo4j (Graph DB)</text>
-    <line x1="20" y1="130" x2="180" y2="130" stroke="#30363d" />
-    
-    <text x="20" y="155" fill="#8b949e" font-size="12">Single Source of Truth</text>
-    <text x="20" y="175" fill="#8b949e" font-size="12">Version Control Manager</text>
-    <text x="20" y="195" fill="#8b949e" font-size="12">Snapshot Engine</text>
+    <text x="50" y="75" font-family="Arial, sans-serif" font-size="16" fill="#f8fafc" text-anchor="middle" font-weight="bold">Nocturne</text>
+    <text x="50" y="95" font-family="Arial, sans-serif" font-size="12" fill="#cbd5e1" text-anchor="middle">Memory Core</text>
+    <text x="50" y="115" font-family="Arial, sans-serif" font-size="10" fill="#94a3b8" text-anchor="middle">(SQLite)</text>
   </g>
 
-  <!-- ======================== LEFT: AI INTERFACE ======================== -->
-  <g transform="translate(40, 120)">
-    <rect width="180" height="180" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2" />
-    <text x="90" y="30" text-anchor="middle" fill="#a5d6ff" font-weight="bold">AI Interface (MCP)</text>
+
+  <!-- === LEFT: AI INTERFACE (MCP) === -->
+  <g transform="translate(70, 150)">
+    <rect x="0" y="0" width="160" height="120" rx="8" fill="#1e293b" stroke="#60a5fa" stroke-width="2" filter="url(#glow-ai)"/>
+    <text x="80" y="30" font-family="Arial, sans-serif" font-size="16" fill="#60a5fa" text-anchor="middle" font-weight="bold">AI Agent</text>
+    <text x="80" y="50" font-family="Arial, sans-serif" font-size="12" fill="#bfdbfe" text-anchor="middle">Context Window</text>
     
-    <text x="20" y="60" fill="#c9d1d9" font-size="14">🤖 For Agents</text>
-    <text x="20" y="80" fill="#8b949e" font-size="11">Antigravity / Claude / etc</text>
+    <line x1="10" y1="70" x2="150" y2="70" stroke="#334155" stroke-width="1"/>
     
-    <rect x="20" y="95" width="140" height="1" fill="#30363d" />
-    
-    <text x="15" y="120" fill="#79c0ff" font-size="11" font-family="monospace">read_memory()</text>
-    <text x="15" y="140" fill="#79c0ff" font-size="11" font-family="monospace">patch_memory()</text>
-    <text x="15" y="160" fill="#79c0ff" font-size="11" font-family="monospace">create_entity() ...</text>
+    <text x="80" y="90" font-family="Arial, sans-serif" font-size="11" fill="#93c5fd" text-anchor="middle">MCP Client</text>
+    <text x="80" y="105" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">(Cursor/Claude/etc)</text>
   </g>
 
-  <!-- ======================== RIGHT: HUMAN FRONTEND ======================== -->
-  <g transform="translate(580, 120)">
-    <rect width="180" height="180" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="2" />
-    <text x="90" y="30" text-anchor="middle" fill="#d2a8ff" font-weight="bold">Human Frontend</text>
+  <!-- Connection: AI <-> DB -->
+  <g>
+    <!-- Read path -->
+    <path d="M 230 190 L 350 190" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)" stroke-dasharray="5,3"/>
+    <text x="290" y="180" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">read_memory</text>
     
-    <text x="20" y="60" fill="#c9d1d9" font-size="14">👩‍💻 For Humans</text>
-    <text x="20" y="80" fill="#8b949e" font-size="11">Web Dashboard (React)</text>
-    
-    <rect x="20" y="95" width="140" height="1" fill="#30363d" />
-    
-    <text x="20" y="120" fill="#ffa657" font-size="12">👁️ Review &amp; Audit</text>
-    <text x="20" y="140" fill="#ffa657" font-size="12">✏️ Manual Edit</text>
-    <text x="20" y="160" fill="#ffa657" font-size="12">🧹 Cleanup</text>
+    <!-- Write path -->
+    <path d="M 230 230 L 350 230" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)"/>
+    <text x="290" y="250" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">create / update</text>
   </g>
 
-  <!-- ======================== CONNECTORS ======================== -->
-  
-  <!-- AI <-> Center -->
-  <g transform="translate(225, 210)">
-    <!-- Outgoing to Core -->
-    <path d="M 0 -10 L 65 -10" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrowhead-blue)" />
-    <!-- Incoming from Core -->
-    <path d="M 75 10 L 10 10" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrowhead-blue)" />
+
+  <!-- === RIGHT: HUMAN INTERFACE (DASHBOARD) === -->
+  <g transform="translate(570, 150)">
+    <rect x="0" y="0" width="160" height="120" rx="8" fill="#1e293b" stroke="#f472b6" stroke-width="2"/>
+    <text x="80" y="30" font-family="Arial, sans-serif" font-size="16" fill="#f472b6" text-anchor="middle" font-weight="bold">Human</text>
+    <text x="80" y="50" font-family="Arial, sans-serif" font-size="12" fill="#fbcfe8" text-anchor="middle">Dashboard</text>
     
-    <text x="37" y="-18" text-anchor="middle" fill="#58a6ff" font-size="10">MCP/RPC</text>
+    <line x1="10" y1="70" x2="150" y2="70" stroke="#334155" stroke-width="1"/>
+    
+    <text x="80" y="90" font-family="Arial, sans-serif" font-size="11" fill="#f9a8d4" text-anchor="middle">Web Interface</text>
+    <text x="80" y="105" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">(React + Vite)</text>
   </g>
 
-  <!-- Human <-> Center -->
-  <g transform="translate(505, 210)">
-    <!-- Outgoing to Core -->
-    <path d="M 75 -10 L 10 -10" stroke="#d2a8ff" stroke-width="2" marker-end="url(#arrowhead-purple)" />
-    <!-- Incoming from Core -->
-    <path d="M 0 10 L 65 10" stroke="#d2a8ff" stroke-width="2" marker-end="url(#arrowhead-purple)" />
+  <!-- Connection: Human <-> DB -->
+  <g>
+    <!-- View path -->
+    <path d="M 570 190 L 450 190" stroke="#f472b6" stroke-width="2" stroke-dasharray="5,3"/>
+    <polygon points="450,190 460,186 460,194" fill="#f472b6" /> <!-- Left arrow manual -->
+    <text x="510" y="180" font-family="Arial, sans-serif" font-size="11" fill="#f472b6" text-anchor="middle">View / Audit</text>
     
-    <text x="37" y="-18" text-anchor="middle" fill="#d2a8ff" font-size="10">HTTP/API</text>
+    <!-- Edit path -->
+    <path d="M 570 230 L 450 230" stroke="#f472b6" stroke-width="2"/>
+    <polygon points="450,230 460,226 460,234" fill="#f472b6" /> <!-- Left arrow manual for write -->
+    <text x="510" y="250" font-family="Arial, sans-serif" font-size="11" fill="#f472b6" text-anchor="middle">Prune / Rollback</text>
   </g>
 
-  <!-- Footer -->
-  <text x="400" y="380" text-anchor="middle" fill="#8b949e" font-size="12">Nocturne Memory Architecture v1.1 - Centralized Core</text>
+  <!-- === BOTTOM: BACKEND === -->
+  <g transform="translate(0, 350)">
+    <text x="400" y="0" font-family="Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Backend API (FastAPI)</text>
+    <line x1="350" y1="-50" x2="330" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
+    <line x1="450" y1="-50" x2="470" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
+  </g>
+
 </svg>
