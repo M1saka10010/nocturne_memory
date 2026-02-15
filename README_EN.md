@@ -99,7 +99,7 @@ Too lazy to type commands manually? **Send the following prompt to your AI assis
 Please deploy Nocturne Memory MCP Server for me.
 
 Steps:
-1. Git clone https://github.com/StartTheEvolution/nocturne-memory.git to the current directory.
+1. Git clone https://github.com/Dataojitori/nocturne_memory.git to the current directory.
 2. Enter the directory, run pip install -r backend/requirements.txt
 3. Copy .env.example to .env
 4. [CRITICAL] Get the absolute path of the current directory. Modify DATABASE_URL in .env to point to that absolute path.
@@ -116,7 +116,7 @@ Steps:
 ### 1. Clone & Install Dependencies
 
 ```bash
-git clone https://github.com/StartTheEvolution/nocturne-memory.git
+git clone https://github.com/Dataojitori/nocturne_memory.git
 cd nocturne-memory
 pip install -r backend/requirements.txt
 ```

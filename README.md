@@ -100,7 +100,7 @@ Nocturne 采用极简的 **SQLite + URI** 架构，拒绝复杂的向量数据�
 请帮我部署 Nocturne Memory MCP Server。
 
 执行步骤：
-1. Git clone https://github.com/StartTheEvolution/nocturne-memory.git 到当前目录。
+1. Git clone https://github.com/Dataojitori/nocturne_memory.git 到当前目录。
 2. 进入目录，运行 pip install -r backend/requirements.txt
 3. 复制 .env.example 为 .env
 4. 【关键】获取当前目录的绝对路径，修改 .env 中的 DATABASE_URL，确保它指向绝对路径。
@@ -117,7 +117,7 @@ Nocturne 采用极简的 **SQLite + URI** 架构，拒绝复杂的向量数据�
 ### 1. 克隆与安装依赖
 
 ```bash
-git clone https://github.com/StartTheEvolution/nocturne-memory.git
+git clone https://github.com/Dataojitori/nocturne_memory.git
 cd nocturne-memory
 pip install -r backend/requirements.txt
 ```
