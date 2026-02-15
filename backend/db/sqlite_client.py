@@ -763,71 +763,131 @@ class SQLiteClient:
                 "memory_id": target_id,
             }
 
-    async def remove_path(self, path: str, domain: str = "core") -> Dict[str, Any]:
+    async def remove_path(
+        self, path: str, domain: str = "core", recursive: bool = False
+    ) -> Dict[str, Any]:
         """
-        Remove a path (but not the memory it points to).
-
-        Refuses to delete a path that still has children. The caller must
-        delete all child paths first before removing the parent.
+        Remove a path.
 
         Args:
             path: Path to remove
             domain: The domain/namespace (e.g., "core", "writer", "game")
+            recursive: If True, also delete descendants (provided no orphans are created).
+                       If False, fail if descendants exist.
 
         Returns:
             Removal info
 
         Raises:
-            ValueError: If the path has children or does not exist
+            ValueError: If path doesn't exist, has children (when recursive=False),
+                        or if recursive deletion would orphan sub-memories.
         """
         async with self.session() as session:
+            # 1. Get target path object
             result = await session.execute(
                 select(Path).where(Path.domain == domain).where(Path.path == path)
             )
-            path_obj = result.scalar_one_or_none()
+            target_path_obj = result.scalar_one_or_none()
 
-            if not path_obj:
+            if not target_path_obj:
                 raise ValueError(f"Path '{domain}://{path}' not found")
 
-            # Block deletion if child paths exist
+            # 2. Identify Subtree (Target + Descendants)
             safe_path = (
                 path.replace("\\", "\\\\")
                 .replace("%", "\\%")
                 .replace("_", "\\_")
             )
             child_prefix = f"{safe_path}/"
-            child_result = await session.execute(
-                select(func.count())
-                .select_from(Path)
-                .where(Path.domain == domain)
-                .where(Path.path.like(f"{child_prefix}%", escape="\\"))
-            )
-            child_count = child_result.scalar()
 
-            if child_count > 0:
-                # Fetch up to 5 child URIs for a helpful error message
-                sample_result = await session.execute(
-                    select(Path.path)
-                    .where(Path.domain == domain)
-                    .where(Path.path.like(f"{child_prefix}%", escape="\\"))
-                    .order_by(Path.path)
-                    .limit(5)
+            subtree_result = await session.execute(
+                select(Path)
+                .where(Path.domain == domain)
+                .where(
+                    or_(
+                        Path.path == path,
+                        Path.path.like(f"{child_prefix}%", escape="\\"),
+                    )
                 )
-                sample_paths = [
-                    f"{domain}://{row[0]}" for row in sample_result.all()
-                ]
-                listing = ", ".join(sample_paths)
+            )
+            subtree_paths = subtree_result.scalars().all()
+
+            # Check for children when not recursive
+            if not recursive and len(subtree_paths) > 1:
+                # Fetch up to 5 child URIs for a helpful error message
+                children = [
+                    f"{p.domain}://{p.path}"
+                    for p in subtree_paths
+                    if p.path != path
+                ][:5]
+                child_count = len(subtree_paths) - 1
+                listing = ", ".join(children)
                 suffix = f" (and {child_count - 5} more)" if child_count > 5 else ""
                 raise ValueError(
                     f"Cannot delete '{domain}://{path}': "
-                    f"it still has {child_count} child path(s). "
-                    f"Delete children first: {listing}{suffix}"
+                    f"it has {child_count} child path(s) and recursive=False. "
+                    f"Children: {listing}{suffix}"
                 )
 
-            memory_id = path_obj.memory_id
-            await session.delete(path_obj)
+            # Helper sets for quick lookup
+            subtree_path_set = {(p.domain, p.path) for p in subtree_paths}
+            subtree_memory_ids = {p.memory_id for p in subtree_paths}
 
-            return {"removed_uri": f"{domain}://{path}", "memory_id": memory_id}
+            # 3. Check for Orphans (Collateral Damage)
+            target_memory_id = target_path_obj.memory_id
+
+            for mem_id in subtree_memory_ids:
+                if mem_id == target_memory_id:
+                    # The user explicitly targeted this memory's path (the root of the delete).
+                    # We interpret this as "I want to delete this specific entry".
+                    # If this causes the target memory to become an orphan, that is the
+                    # expected behavior of a delete operation.
+                    continue
+
+                # For collateral memories (descendants), we must ensure they have a lifeline.
+                # Check if this memory has any paths OUTSIDE the subtree.
+                all_paths_result = await session.execute(
+                    select(Path.domain, Path.path).where(Path.memory_id == mem_id)
+                )
+                all_paths = all_paths_result.all()
+
+                has_external_link = False
+                for p_domain, p_path in all_paths:
+                    if (p_domain, p_path) not in subtree_path_set:
+                        has_external_link = True
+                        break
+
+                if not has_external_link:
+                    # Find which path in the subtree points to this memory (for error msg)
+                    offending_path = next(
+                        p.path for p in subtree_paths if p.memory_id == mem_id
+                    )
+                    raise ValueError(
+                        f"Cannot delete '{domain}://{path}' recursively: "
+                        f"It would orphan sub-memory '{domain}://{offending_path}' (ID: {mem_id}). "
+                        f"This memory relies solely on the tree you are deleting. "
+                        f"Please create an alias for it elsewhere before deleting the parent."
+                    )
+
+            # 4. Safe to Delete - Cascade Delete
+            # Collect full info of every path BEFORE deleting (for snapshot/rollback).
+            deleted_paths_info = []
+            for p in subtree_paths:
+                deleted_paths_info.append({
+                    "domain": p.domain,
+                    "path": p.path,
+                    "uri": f"{p.domain}://{p.path}",
+                    "memory_id": p.memory_id,
+                    "priority": p.priority,
+                    "disclosure": p.disclosure,
+                })
+                await session.delete(p)
+
+            return {
+                "removed_uri": f"{domain}://{path}",
+                "memory_id": target_memory_id,
+                "deleted_paths": deleted_paths_info,
+            }
 
     async def restore_path(
         self,

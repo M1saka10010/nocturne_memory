@@ -667,6 +667,7 @@ async def create_memory(
     Args:
         parent_uri: Parent URI (e.g., "core://agent", "writer://chapters")
                     Use "core://" or "writer://" for root level in that domain
+                    parent_uri MUST be an existing node, or it will cause an ERROR.
         content: Memory content
         priority: **Retrieval Priority** (lower = higher priority, min 0).
                     *   优先度决定了回忆时记忆显示的顺序，以及冲突解决时的优先级。
@@ -890,6 +891,12 @@ async def delete_memory(uri: str) -> str:
         delete_memory("writer://draft_v1")
     """
     client = get_sqlite_client()
+    manager = get_snapshot_manager()
+    session_id = get_session_id()
+    
+    # Track state for rollback
+    newly_created_snapshots = []  # Snapshots we created during this operation
+    backup_snapshots = []         # Snapshots that existed before we started (to restore on error)
 
     try:
         # Parse URI
@@ -901,17 +908,65 @@ async def delete_memory(uri: str) -> str:
         if not memory:
             return f"Error: Memory at '{full_uri}' not found."
 
-        # Snapshot path before deletion
-        await _snapshot_path_delete(full_uri)
+        # 1. Identify all targets (self + descendants)
+        targets = [full_uri]
+        
+        all_paths = await client.get_all_paths(domain=domain)
+        safe_prefix = f"{path}/"
+        for p in all_paths:
+            if p["path"].startswith(safe_prefix):
+                child_uri = make_uri(p["domain"], p["path"])
+                targets.append(child_uri)
 
-        # Remove the path
-        await client.remove_path(path, domain)
+        # 2. Backup existing snapshots for all targets
+        # This protects against _snapshot_path_delete's destructive nature (it deletes 'create' snapshots)
+        for target_uri in targets:
+            # Backup path snapshot
+            existing_path_snap = manager.get_snapshot(session_id, target_uri)
+            if existing_path_snap:
+                backup_snapshots.append(existing_path_snap)
+            
+            # Backup content snapshot (if any)
+            # _snapshot_path_delete might wipe this too if it's reverting a creation
+            content_snap_id = manager.find_memory_snapshot_by_uri(session_id, target_uri)
+            if content_snap_id:
+                existing_content_snap = manager.get_snapshot(session_id, content_snap_id)
+                if existing_content_snap:
+                    backup_snapshots.append(existing_content_snap)
 
-        return f"Success: Memory '{full_uri}' deleted."
+        # 3. Apply deletion snapshots
+        for target_uri in targets:
+            if await _snapshot_path_delete(target_uri):
+                newly_created_snapshots.append(target_uri)
 
-    except ValueError as e:
-        return f"Error: {str(e)}"
+        # 4. Remove the path (recursive=True allows cascade delete)
+        result = await client.remove_path(path, domain, recursive=True)
+
+        deleted_paths = result.get("deleted_paths", [])
+        descendant_count = len(deleted_paths) - 1  # exclude the target itself
+
+        msg = f"Success: Memory '{full_uri}' deleted."
+        if descendant_count > 0:
+            msg += f" (Recursively removed {descendant_count} descendant path(s))"
+
+        return msg
+
     except Exception as e:
+        # ROLLBACK STRATEGY
+        # 1. Remove any snapshots we just created (clean up the 'delete' markers)
+        for snap_uri in newly_created_snapshots:
+            manager.delete_snapshot(session_id, snap_uri)
+            
+        # 2. RESTORE any snapshots we destroyed (bring back 'create'/'modify' markers)
+        for snap in backup_snapshots:
+            manager.create_snapshot(
+                session_id=session_id,
+                resource_id=snap["resource_id"],
+                resource_type=snap["resource_type"],
+                snapshot_data=snap["data"],
+                force=True # Force overwrite to ensure restoration
+            )
+            
         return f"Error: {str(e)}"
 
 
