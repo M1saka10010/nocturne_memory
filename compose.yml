@@ -19,7 +19,7 @@ services:
       - "${PORT:-8000}:8000"
     volumes:
       # 持久化 SQLite 数据库
-      - memory-data:/app/data
+      - ./memory-data:/app/data
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////app/data/memory.db
       - VALID_DOMAINS=${VALID_DOMAINS:-core,writer,game,notes}
@@ -30,7 +30,3 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
-
-volumes:
-  memory-data:
-    driver: local

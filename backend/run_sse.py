@@ -16,9 +16,8 @@ def main():
     print("Initializing Nocturne Memory SSE Server...")
     
     # Create the Starlette app for SSE
-    # The default mount path is usually /sse or /
-    # mcp.sse_app() creates an app that serves /sse and /messages
-    app = mcp.sse_app("/sse")
+    # sse_app() without args mounts SSE at /sse and messages at /messages
+    app = mcp.sse_app()
     
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")

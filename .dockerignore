@@ -22,7 +22,6 @@ __pycache__
 # Docker
 Dockerfile
 compose.yml
-docker/
 
 # Project files not needed in image
 .env

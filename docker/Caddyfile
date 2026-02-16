@@ -1,5 +1,17 @@
 :8000 {
-	# API 反代到后端 Uvicorn
+	# MCP SSE 端点（反代到 MCP Server）
+	handle /sse* {
+		reverse_proxy 127.0.0.1:8002 {
+			header_up Host 127.0.0.1:8002
+		}
+	}
+	handle /messages* {
+		reverse_proxy 127.0.0.1:8002 {
+			header_up Host 127.0.0.1:8002
+		}
+	}
+
+	# REST API 反代到后端 Uvicorn
 	handle /api/* {
 		uri strip_prefix /api
 		reverse_proxy 127.0.0.1:8001

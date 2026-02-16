@@ -23,16 +23,12 @@ FROM python:3.12-slim
 # apt 使用清华源
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources
 
-# 安装 Caddy（单二进制，无需 Supervisor）
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl debian-keyring debian-archive-keyring apt-transport-https && \
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg && \
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends caddy && \
-    apt-get purge -y debian-keyring debian-archive-keyring apt-transport-https && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/*
+# 安装 Caddy（直接从 GitHub 下载二进制，避免 Cloudsmith 源不稳定）
+ARG CADDY_VERSION=2.10.2
+ADD https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz /tmp/caddy.tar.gz
+RUN tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy && \
+    chmod +x /usr/local/bin/caddy && \
+    rm /tmp/caddy.tar.gz
 
 WORKDIR /app
 
