@@ -25,7 +25,7 @@ services:
       - VALID_DOMAINS=${VALID_DOMAINS:-core,writer,game,notes}
       - CORE_MEMORY_URIS=${CORE_MEMORY_URIS:-core://agent,core://my_user,core://agent/my_user}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       start_period: 10s
