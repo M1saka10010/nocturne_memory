@@ -1,0 +1,18 @@
+:8000 {
+	# API 反代到后端 Uvicorn
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:8001
+	}
+
+	# 前端静态文件 + SPA 回退
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+
+	# 静态资源缓存
+	@static path *.js *.css *.png *.jpg *.jpeg *.gif *.ico *.svg *.woff *.woff2
+	header @static Cache-Control "public, max-age=604800, immutable"
+}

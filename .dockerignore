@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Node
+frontend/node_modules
+frontend/dist
+
+# Python cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docker
+Dockerfile
+compose.yml
+docker/
+
+# Project files not needed in image
+.env
+*.md
+LICENSE
+docs/
+scripts/
+demo.db
+nocturne_memory.db
+migration_log.json
+snapshots/
+backups/
+assets/

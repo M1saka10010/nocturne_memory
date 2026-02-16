@@ -1,0 +1,36 @@
+# ==============================================================================
+# Nocturne Memory - Docker Compose
+# ==============================================================================
+# 使用方式:
+#   启动:   docker compose up -d
+#   停止:   docker compose down
+#   日志:   docker compose logs -f
+#   重建:   docker compose up -d --build
+# ==============================================================================
+
+services:
+  nocturne-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nocturne-memory
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # 持久化 SQLite 数据库
+      - memory-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/memory.db
+      - VALID_DOMAINS=${VALID_DOMAINS:-core,writer,game,notes}
+      - CORE_MEMORY_URIS=${CORE_MEMORY_URIS:-core://agent,core://my_user,core://agent/my_user}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  memory-data:
+    driver: local
